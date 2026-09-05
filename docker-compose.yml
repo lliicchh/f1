@@ -1,0 +1,194 @@
+# 所有区服共用这一份编排文件，靠 env 文件和 project 名区分（§11.1）：
+#
+#   ENV_FILE=deploy/s1.env TAG=v1.0.0 docker compose -p game-s1 up -d
+#   ENV_FILE=deploy/s2.env TAG=v1.0.0 docker compose -p game-s2 up -d
+#
+# 要点（§11.2）：
+#   - 服务名与 NODE_SEQ 对齐（lobby-2 配 NODE_SEQ=2），看日志不用做映射
+#   - 不使用 deploy.replicas：副本之间无法携带不同的 NODE_SEQ
+#   - stop_grace_period 必须给够，默认 10s 会在优雅下线刷盘途中 SIGKILL
+
+x-common: &common
+  env_file:
+    - "./${ENV_FILE:-deploy/s1.env}"
+  depends_on:
+    etcd: {condition: service_healthy}
+    nats: {condition: service_started}
+    redis: {condition: service_healthy}
+  stop_grace_period: 60s
+  restart: unless-stopped
+  networks: [game]
+
+x-lobby: &lobby
+  <<: *common
+  image: game/lobby:${TAG:-dev}
+  build:
+    context: .
+    args: {SVC: lobby}
+
+x-room: &room
+  <<: *common
+  image: game/room:${TAG:-dev}
+  build:
+    context: .
+    args: {SVC: room}
+
+services:
+  # ------------------------- 基础设施 -------------------------
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.15
+    command:
+      - etcd
+      - --name=etcd0
+      - --data-dir=/etcd-data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd:2380
+      - --initial-cluster=etcd0=http://etcd:2380
+      - --auto-compaction-retention=1
+    volumes: [etcd-data:/etcd-data]
+    healthcheck:
+      test: ["CMD", "etcdctl", "endpoint", "health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [game]
+
+  nats:
+    image: nats:2.10-alpine
+    # -js 开启 JetStream，job.* 必达任务依赖它（§5.2）
+    command: ["-js", "-sd", "/data", "-m", "8222"]
+    volumes: [nats-data:/data]
+    ports: ["8222:8222"]
+    networks: [game]
+
+  redis:
+    image: redis:7-alpine
+    # §6.4：Redis 是唯一持久化后端，配错等于丢全服数据。
+    #   maxmemory-policy 必须 noeviction —— 设 LRU 会在内存满时静默淘汰玩家数据
+    #   appendonly yes + appendfsync everysec
+    command: >
+      redis-server --appendonly yes
+                   --appendfsync everysec
+                   --maxmemory-policy noeviction
+                   --save 900 1
+                   --save 300 10
+    volumes: [redis-data:/data]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    networks: [game]
+
+  # ------------------------- 网关 -------------------------
+  # Gateway 需固定端口（要被外部访问 + LB 配置），本来就得展开写。
+  gateway-1:
+    <<: *common
+    image: game/gateway:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: gateway}
+    environment:
+      NODE_SEQ: "1"
+      ADVERTISE_ADDR: "gateway-1:7000"
+    ports: ["7001:7000", "9101:9100"]
+
+  gateway-2:
+    <<: *common
+    image: game/gateway:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: gateway}
+    environment:
+      NODE_SEQ: "2"
+      ADVERTISE_ADDR: "gateway-2:7000"
+    ports: ["7002:7000", "9102:9100"]
+
+  # ------------------------- Lobby（分片独占，×3）-------------------------
+  lobby-1:
+    <<: *lobby
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "lobby-1"}
+    ports: ["9111:9100"]
+  lobby-2:
+    <<: *lobby
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "lobby-2"}
+    ports: ["9112:9100"]
+  lobby-3:
+    <<: *lobby
+    environment: {NODE_SEQ: "3", ADVERTISE_ADDR: "lobby-3"}
+    ports: ["9113:9100"]
+
+  # ------------------------- Room（分片独占，×2）-------------------------
+  room-1:
+    <<: *room
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "room-1"}
+    ports: ["9121:9100"]
+  room-2:
+    <<: *room
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "room-2"}
+    ports: ["9122:9100"]
+
+  # ------------------------- Match（按 模式×段位 分片，主备）-------------------------
+  match-1:
+    <<: *common
+    image: game/match:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: match}
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "match-1"}
+    ports: ["9131:9100"]
+  match-2:
+    <<: *common
+    image: game/match:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: match}
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "match-2"}
+    ports: ["9132:9100"]
+
+  # ------------------------- Chat（queue group，无数据）-------------------------
+  chat-1:
+    <<: *common
+    image: game/chat:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: chat}
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "chat-1"}
+    ports: ["9141:9100"]
+  chat-2:
+    <<: *common
+    image: game/chat:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: chat}
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "chat-2"}
+    ports: ["9142:9100"]
+
+  # ------------------------- World（选主主备）-------------------------
+  world-1:
+    <<: *common
+    image: game/world:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: world}
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "world-1"}
+    ports: ["9151:9100"]
+  world-2:
+    <<: *common
+    image: game/world:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: world}
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "world-2"}
+    ports: ["9152:9100"]
+
+volumes:
+  etcd-data:
+  redis-data:
+  nats-data:
+
+networks:
+  game:
+    driver: bridge

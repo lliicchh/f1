@@ -1,0 +1,99 @@
+syntax = "proto3";
+
+package game.v1;
+
+option go_package = "github.com/gamedev/f1/pkg/pb;pb";
+
+// ---------------------------------------------------------------------------
+// 玩家数据按模块拆分，与 Redis key 一一对应（设计文档 §6.1）：
+//   p:{uid}:base    PlayerBase    高频、小
+//   p:{uid}:bag     PlayerBag     中频、大
+//   p:{uid}:quest   PlayerQuest   中频
+//   p:{uid}:social  PlayerSocial  低频
+//   p:{uid}:mail    PlayerMail    低频
+// 演进规则：只增字段不改 tag，废弃字段用 reserved。
+// ---------------------------------------------------------------------------
+
+message PlayerBase {
+  uint64 uid          = 1;
+  string nick         = 2;
+  string avatar       = 3;
+  uint32 level        = 4;
+  uint64 exp          = 5;
+  map<uint32, int64> currency = 6;  // CurrencyType -> amount
+  int64  created_at   = 7;
+  int64  last_login   = 8;
+  int64  last_logout  = 9;
+  uint64 power        = 10;
+  uint64 guild_id     = 11;
+}
+
+message Item {
+  uint64 instance_id = 1;  // 雪花 ID，唯一
+  uint32 tpl_id      = 2;
+  int64  count       = 3;
+  int64  obtained_at = 4;
+  map<string, int64> attrs = 5;
+}
+
+message PlayerBag {
+  uint64 uid = 1;
+  repeated Item items = 2;
+  uint32 capacity = 3;
+}
+
+message Quest {
+  uint32 quest_id  = 1;
+  uint32 state     = 2;  // 0=未接 1=进行中 2=可领奖 3=已完成
+  int64  progress  = 3;
+  int64  target    = 4;
+  int64  accept_at = 5;
+}
+
+message PlayerQuest {
+  uint64 uid = 1;
+  repeated Quest quests = 2;
+  int64 daily_reset_at = 3;
+}
+
+message PlayerSocial {
+  uint64 uid = 1;
+  repeated uint64 friends = 2;
+  repeated uint64 apply_in = 3;
+  repeated uint64 blacklist = 4;
+  uint64 guild_id = 5;
+}
+
+message Mail {
+  uint64 mail_id   = 1;
+  string title     = 2;
+  string content   = 3;
+  string sender    = 4;
+  int64  send_at   = 5;
+  int64  expire_at = 6;
+  bool   read      = 7;
+  bool   claimed   = 8;
+  repeated Attachment attachments = 9;
+}
+
+message Attachment {
+  uint32 tpl_id = 1;
+  int64  count  = 2;
+}
+
+message PlayerMail {
+  uint64 uid = 1;
+  repeated Mail mails = 2;
+}
+
+// profile:{uid} 只读摘要（设计文档 §6.5，CQRS 读模型）。
+// 以 Redis HASH 存储，任意进程可直读，不唤醒玩家对象。
+message Profile {
+  uint64 uid        = 1;
+  string nick       = 2;
+  string avatar     = 3;
+  uint32 level      = 4;
+  uint64 guild_id   = 5;
+  uint64 power      = 6;
+  int64  last_login = 7;
+}

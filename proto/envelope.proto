@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package game.v1;
+
+option go_package = "github.com/gamedev/f1/pkg/pb;pb";
+
+// Envelope 是所有 NATS 消息的统一信封（设计文档 §5.3）。
+//
+// 演进规则：只增字段不改 tag，废弃字段必须 reserved。
+// 滚动发版时新旧版本进程会同时读写同一批数据/消息。
+message Envelope {
+  uint32 cmd       = 1;
+  uint64 uid       = 2;
+  string trace_id  = 3;   // 全链路追踪，第一天就带上
+  string from_node = 4;   // 发送方 nodeID
+  int64  ts_ms     = 5;
+  uint32 seq       = 6;   // 应答匹配
+  bytes  body      = 7;
+
+  // 应答用：非 0 表示错误码，err_msg 为可读信息。
+  uint32 err_code  = 8;
+  string err_msg   = 9;
+
+  // 目标分片，便于日志与断言（发送方按 uid/roomID 计算后填入）。
+  uint32 shard     = 10;
+}
+
+// 通用空体 / 通用确认
+message Empty {}
+
+message Ack {
+  bool ok = 1;
+}

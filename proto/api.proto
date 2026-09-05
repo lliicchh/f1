@@ -1,0 +1,228 @@
+syntax = "proto3";
+
+package game.v1;
+
+option go_package = "github.com/gamedev/f1/pkg/pb;pb";
+
+import "player.proto";
+
+// ------------------------- 登录 / 会话 -------------------------
+
+message LoginReq {
+  uint64 uid     = 1;
+  string token   = 2;
+  string gate_id = 3;
+  uint64 conn_id = 4;
+}
+
+message LoginResp {
+  PlayerBase base   = 1;
+  PlayerBag  bag    = 2;
+  PlayerQuest quest = 3;
+  bool   reconnect  = 4;
+}
+
+message LogoutReq {
+  uint64 uid  = 1;
+  string gate_id = 2;
+  uint64 conn_id = 3;
+  uint32 reason  = 4;   // 0=主动 1=断线 2=顶号
+}
+
+// 顶号下发（push.gate.{gateID}）
+message KickNotify {
+  uint64 uid     = 1;
+  uint64 conn_id = 2;
+  uint32 reason  = 3;
+  string message = 4;
+}
+
+// ------------------------- 玩家逻辑 -------------------------
+
+message HeartbeatReq { int64 client_ts = 1; }
+message HeartbeatResp { int64 server_ts = 1; }
+
+message AddCurrencyReq {
+  uint32 currency = 1;
+  int64  delta    = 2;
+  string reason   = 3;
+}
+message AddCurrencyResp { int64 balance = 1; }
+
+message AddItemReq {
+  uint32 tpl_id = 1;
+  int64  count  = 2;
+  string reason = 3;
+}
+message AddItemResp { Item item = 1; }
+
+message UseItemReq {
+  uint64 instance_id = 1;
+  int64  count       = 2;
+}
+message UseItemResp { int64 remain = 1; }
+
+message GetBagReq {}
+message GetBagResp { PlayerBag bag = 1; }
+
+message AcceptQuestReq { uint32 quest_id = 1; }
+message QuestProgressReq { uint32 quest_id = 1; int64 delta = 2; }
+message QuestResp { Quest quest = 1; }
+
+message GetProfileReq { repeated uint64 uids = 1; }
+message GetProfileResp { repeated Profile profiles = 1; }
+
+message AddFriendReq { uint64 target = 1; }
+message GetSocialReq {}
+message GetSocialResp { PlayerSocial social = 1; }
+
+message GetMailReq {}
+message GetMailResp { PlayerMail mail = 1; }
+message ClaimMailReq { uint64 mail_id = 1; }
+message ClaimMailResp { repeated Item items = 1; }
+
+// L0 写穿：充值 / 开箱，必须幂等（设计文档 §6.2）
+message PurchaseReq {
+  string order_id = 1;   // 客户端唯一订单号
+  uint32 product  = 2;
+  int64  amount   = 3;
+}
+message PurchaseResp {
+  int64 balance   = 1;
+  bool  duplicate = 2;   // true 表示返回的是首次结果
+}
+
+// ------------------------- 房间 / 战斗 -------------------------
+
+message CreateRoomReq {
+  uint32 mode = 1;
+  uint32 max_player = 2;
+  repeated uint64 members = 3;
+  // room_id 由调用方（Match / Lobby）用雪花生成后填入：
+  // 房间分片 = room_id % ShardCount，调用方必须据此选择 subject，
+  // 因此 ID 只能在调用方产生，不能等到 Room 分片里再生成。
+  uint64 room_id = 4;
+}
+message CreateRoomResp { uint64 room_id = 1; }
+
+message JoinRoomReq { uint64 room_id = 1; uint64 uid = 2; }
+message LeaveRoomReq { uint64 room_id = 1; uint64 uid = 2; }
+
+message RoomOpReq {
+  uint64 room_id = 1;
+  uint64 uid     = 2;
+  uint32 op      = 3;
+  bytes  payload = 4;
+}
+
+message RoomSnapshot {
+  uint64 room_id = 1;
+  uint32 mode    = 2;
+  uint32 state   = 3;   // 0=等待 1=战斗中 2=结算
+  repeated uint64 members = 4;
+  int64  created_at = 5;
+  int64  started_at = 6;
+  uint32 frame = 7;
+}
+
+message RoomBroadcast {
+  uint64 room_id = 1;
+  uint32 cmd     = 2;
+  bytes  payload = 3;
+}
+
+// 网关聚合推送：一条消息带多个 uid（设计文档 §9.3）
+message MultiPush {
+  repeated uint64 uids = 1;
+  uint32 cmd = 2;
+  bytes  payload = 3;
+}
+
+message BattleResult {
+  uint64 room_id = 1;
+  uint64 target_uid = 5;  // job 投递时指明结算目标
+  repeated uint64 winners = 2;
+  repeated uint64 losers  = 3;
+  map<uint64, int64> score = 4;
+}
+
+// ------------------------- 匹配 -------------------------
+
+message MatchEnqueueReq {
+  uint64 uid  = 1;
+  uint32 mode = 2;
+  uint32 tier = 3;
+  uint64 power = 4;
+}
+message MatchCancelReq { uint64 uid = 1; uint32 mode = 2; uint32 tier = 3; }
+message MatchAck { bool queued = 1; int32 position = 2; }
+
+message MatchFound {
+  uint64 room_id = 1;
+  uint32 mode    = 2;
+  repeated uint64 members = 3;
+}
+
+// ------------------------- 聊天 -------------------------
+
+message ChatReq {
+  uint32 channel = 1;   // 1=世界 2=公会 3=私聊 4=房间
+  uint64 from    = 2;
+  uint64 to      = 3;
+  uint64 guild_id = 4;
+  uint64 room_id  = 5;
+  string text    = 6;
+}
+message ChatMsg {
+  uint32 channel = 1;
+  uint64 from    = 2;
+  string from_nick = 3;
+  string text    = 4;
+  int64  ts_ms   = 5;
+}
+
+// ------------------------- 跨分片转移（§8） -------------------------
+
+message TransferJob {
+  string txid = 1;
+  uint64 from_uid = 2;
+  uint64 to_uid   = 3;
+  repeated Attachment items = 4;
+  int64  currency_delta = 5;
+  uint32 currency_type  = 6;
+  string reason = 7;
+  int64  created_at = 8;
+}
+
+message MailSendJob {
+  uint64 to_uid = 1;
+  Mail   mail   = 2;
+  string txid   = 3;
+}
+
+// ------------------------- 控制面（§10） -------------------------
+
+message HandoffReq {
+  string kind      = 1;   // "lobby" / "room"
+  uint32 shard     = 2;
+  string from_node = 3;
+  string to_node   = 4;
+}
+message HandoffResp {
+  bool   ready  = 1;
+  string reason = 2;
+}
+
+message ShutdownReq { string reason = 1; }
+
+// ------------------------- 世界（§2.1） -------------------------
+
+message WorldBossState {
+  uint64 boss_id = 1;
+  int64  hp      = 2;
+  int64  max_hp  = 3;
+  int64  started_at = 4;
+  bool   alive   = 5;
+}
+message WorldBossHitReq { uint64 uid = 1; int64 damage = 2; }
+message WorldBossHitResp { int64 hp_left = 1; bool killed = 2; }
