@@ -1,11 +1,8 @@
-// Package world 实现世界服：全局唯一逻辑（世界 BOSS、活动调度），选主主备（§2.1）。
+// Package world 世界服：世界 BOSS、活动调度这类全局唯一的逻辑，选主主备
 //
-// 「全局唯一」这件事本身就是一致性约束：同一时刻只能有一个实例在改 BOSS 血量，
-// 否则两个实例各扣各的，最后写谁的都不对。因此这里同时用两道保护：
-//   - 选主（软保护）：只有 leader 订阅 req.world.>
-//   - epoch fencing（硬保护）：leader 的 etcd revision 作为 epoch，落盘时校验
-//
-// 与分片那套完全同构，只是分片空间只有一个格子。
+// 同一时刻只能有一个实例改 BOSS 血量，不然两边各扣各的，写谁的都不对。
+// 两道保护：选主决定谁订阅 req.world.>，epoch fencing 在落盘时做最终裁决。
+// 跟分片那套相同，只是空间只有一格
 package world
 
 import (
@@ -28,15 +25,15 @@ import (
 )
 
 const (
-	// worldShard 是世界服在 epoch 命名空间里占用的固定格位。
+	// worldShard 世界服在 epoch 命名空间里占的那一格
 	worldShard = 0
-	// bossMaxHP 是 BOSS 满血值。
+	// bossMaxHP BOSS 满血值
 	bossMaxHP = 1_000_000
-	// bossRespawn 是击杀后的重生间隔。
+	// bossRespawn 击杀后的重生间隔
 	bossRespawn = 10 * time.Minute
-	// flushInterval 是 BOSS 血量的落盘间隔（L1 级别）。
+	// flushInterval BOSS 血量的落盘间隔
 	flushInterval = 3 * time.Second
-	// mailboxSize 是世界服的消息队列容量。
+	// mailboxSize 世界服的消息队列容量
 	mailboxSize = 4096
 )
 
@@ -45,13 +42,13 @@ type task struct {
 	fn  func()
 }
 
-// Service 是世界服务。
+// Service 世界服务
 type Service struct {
 	node    *node.Node
 	elector *leader.Elector
 	fencer  *store.Fencer
 
-	// 世界服本身就是一个 Actor：单 goroutine 串行处理，无锁。
+	// 世界服自己就是一个 Actor，单 goroutine 串行，不用锁
 	mbox chan task
 	quit chan struct{}
 	done chan struct{}
@@ -67,7 +64,6 @@ type Service struct {
 	running   bool
 }
 
-// New 构造世界服务。
 func New() *Service {
 	return &Service{
 		mbox: make(chan task, mailboxSize),
@@ -76,10 +72,9 @@ func New() *Service {
 	}
 }
 
-// Name 实现 node.Service。
 func (s *Service) Name() string { return "world" }
 
-// Start 启动服务：先起 Actor，再参选。
+// Start 先起 Actor 再参选
 func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.node = n
 	s.fencer = store.NewFencer(n.Redis, n.Keys, "world")
@@ -97,7 +92,6 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	return nil
 }
 
-// loop 是世界服的 Actor 主循环。
 func (s *Service) loop() {
 	defer close(s.done)
 	t := time.NewTicker(time.Second)
@@ -141,22 +135,20 @@ func (s *Service) post(tk task) bool {
 	}
 }
 
-// onElected 当选后：抬高 epoch → 加载状态 → 订阅 subject → 服务。
-//
-// 顺序与分片接管完全一致（§10.2 步骤 5）。
+// onElected 当选后依次抬 epoch、加载状态、订阅 subject，跟分片接管一个顺序
 func (s *Service) onElected(ctx context.Context, epoch int64) error {
-	// 1. 抬高 epoch —— 此后旧 leader 的落盘会被拒绝。
+	// 抬 epoch，旧 leader 之后再落盘就会被拒
 	if err := s.fencer.RaiseEpoch(ctx, worldShard, epoch); err != nil {
 		return err
 	}
 
-	// 2. 加载状态。
+	// 加载状态
 	boss, err := s.loadBoss(ctx)
 	if err != nil {
 		return err
 	}
 
-	// 3. 装载进 Actor。
+	// 装进 Actor
 	done := make(chan struct{})
 	if !s.post(task{fn: func() {
 		defer close(done)
@@ -174,7 +166,7 @@ func (s *Service) onElected(ctx context.Context, epoch int64) error {
 		return ctx.Err()
 	}
 
-	// 4. 订阅：只有 leader 订阅 req.world.>，备机完全不接消息。
+	// 订阅。只有 leader 订，备机压根收不到消息
 	sub, err := s.node.Bus.Subscribe(subject.WorldWildcard(), func(m *bus.Msg) {
 		if !s.post(task{msg: m}) {
 			_ = m.RespondErr(protocol.ErrUnavailable, "世界服繁忙，请重试")
@@ -189,10 +181,9 @@ func (s *Service) onElected(ctx context.Context, epoch int64) error {
 	return nil
 }
 
-// onResigned 失去领导权：立即退订并停止处理。
+// onResigned 失去领导权就退订停手
 //
-// 内存中未落盘的 BOSS 血量直接丢弃 —— 此刻我们已不是权威副本，
-// 再写只会覆盖新 leader 的数据（§7.2）。
+// 内存里没落盘的血量直接丢，这会儿已经不是权威副本了，再写会盖掉新 leader 的
 func (s *Service) onResigned(reason string) {
 	for _, sub := range s.subs {
 		_ = sub.Unsubscribe()
@@ -218,7 +209,7 @@ func (s *Service) tick(now time.Time) {
 		s.nextFlush = now.Add(flushInterval)
 		s.flushBoss()
 	}
-	// 活动调度：BOSS 死亡后定时重生。
+	// BOSS 死了定时重生
 	if s.boss != nil && !s.boss.GetAlive() && now.After(s.nextEvent) {
 		s.respawn(now)
 	}
@@ -269,7 +260,7 @@ func (s *Service) handleHit(m *bus.Msg) {
 
 	if killed {
 		logx.Info("世界 BOSS 被击杀", "boss", s.boss.GetBossId(), "killer", req.GetUid())
-		// 击杀是关键状态跃迁，立即落盘，不等下一个 ticker。
+		// 击杀是关键跃迁，立刻落盘，不等下一个 ticker
 		s.flushBoss()
 		s.announce("世界 BOSS 已被击败！")
 	}
@@ -302,7 +293,7 @@ func (s *Service) respawn(now time.Time) {
 	s.announce("世界 BOSS 已刷新！")
 }
 
-// flushBoss 把 BOSS 状态落盘（带 epoch 校验）。
+// flushBoss 把 BOSS 状态落盘，带 epoch 校验
 func (s *Service) flushBoss() {
 	if s.boss == nil {
 		return
@@ -325,12 +316,12 @@ func (s *Service) flushBoss() {
 			return
 		}
 		if errors.Is(err, store.ErrFenced) {
-			// 已经不是 leader 了：让位，绝不重试。
+			// 已经不是 leader 了，让位，别重试
 			logx.Error("BOSS 落盘被 fencing 拒绝，主动让位（告警）", "epoch", epoch, "err", err)
 			s.elector.Stop(context.Background())
 			return
 		}
-		// 其他失败重新标脏，绝不丢弃。
+		// 其他失败重新标脏
 		logx.Error("BOSS 落盘失败，重新标脏", "err", err)
 		s.post(task{fn: func() {
 			if !s.dirty {
@@ -363,7 +354,6 @@ func (s *Service) loadBoss(ctx context.Context) (*pb.WorldBossState, error) {
 	return boss, nil
 }
 
-// announce 全服公告走 push.broadcast（§9.3）。
 func (s *Service) announce(text string) {
 	payload, err := proto.Marshal(&pb.ChatMsg{
 		Channel: protocol.ChanWorld, FromNick: "系统", Text: text, TsMs: time.Now().UnixMilli(),
@@ -380,10 +370,9 @@ func (s *Service) announce(text string) {
 	_ = s.node.Bus.PublishEnv(subject.Broadcast, env)
 }
 
-// NotifyClients 实现 node.Service。
 func (s *Service) NotifyClients(ctx context.Context) {}
 
-// StopAccepting 让位并退订。
+// StopAccepting 让位并退订
 func (s *Service) StopAccepting(ctx context.Context) {
 	if s.elector != nil {
 		s.elector.Stop(ctx)
@@ -394,9 +383,9 @@ func (s *Service) StopAccepting(ctx context.Context) {
 	s.subs = nil
 }
 
-// FlushAll 落盘 BOSS 状态。
+// FlushAll 落盘 BOSS 状态
 func (s *Service) FlushAll(ctx context.Context) error {
-	// 让位时内存已被丢弃，这里只处理「还是 leader 就下线」的场景。
+	// 让位时内存已经丢了，这里只管「还是 leader 就下线」这种情况
 	done := make(chan struct{})
 	var blob []byte
 	var epoch int64
@@ -421,7 +410,6 @@ func (s *Service) FlushAll(ctx context.Context) error {
 		map[string][]byte{s.node.Keys.WorldBoss(): blob})
 }
 
-// Close 停止 Actor。
 func (s *Service) Close(ctx context.Context) {
 	close(s.quit)
 	<-s.done

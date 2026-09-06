@@ -33,7 +33,7 @@ func lobbyCfg(c *config.Config) {
 	c.TxScanInterval = time.Hour // 测试里不让补偿扫描器插手
 }
 
-// startLobby 启动一个真实的 Lobby 服务并等它认领完分片。
+// startLobby 启动一个真实的 Lobby 服务并等它认领完分片
 func startLobby(t *testing.T, env *harness.Env, seq int) (*node.Node, *lobby.Service) {
 	t.Helper()
 	n := env.Node(t, "lobby", "lobby", seq, lobbyCfg)
@@ -52,10 +52,9 @@ func startLobby(t *testing.T, env *harness.Env, seq int) (*node.Node, *lobby.Ser
 	return n, svc
 }
 
-// grant 通过内部签名通道给玩家发钱。
+// grant 走内部签名通道给玩家发钱
 //
-// 客户端已经**不能**再调用 add_currency（评审 P0-1 修复后它是内部命令），
-// 因此测试也必须走与发奖服务相同的路径。
+// 客户端已经调不了 add_currency 了，测试也得走和发奖服务一样的路径
 func grant(t *testing.T, n *node.Node, uid uint64, currency uint32, amount int64) int64 {
 	t.Helper()
 	sh := shard.Of(uid, n.Cfg.ShardCount)
@@ -82,10 +81,10 @@ func grant(t *testing.T, n *node.Node, uid uint64, currency uint32, amount int64
 	return 0
 }
 
-// lobbyCall 带重试地调用 Lobby。
+// lobbyCall 带重试地调 Lobby
 //
-// 分片交接窗口内请求会被 Core NATS 丢弃，「客户端必须实现超时重试」（§10.2）；
-// 这里的重试就是在扮演一个合规的客户端，同时也覆盖了刚启动时分片尚未订阅完的窗口。
+// 交接窗口内请求会被丢掉，客户端本来就该重试。这里顺带覆盖了刚启动时
+// 分片还没订阅完的那一小段
 func lobbyCall(t *testing.T, n *node.Node, uid uint64, cmd protocol.Cmd, body, out proto.Message) error {
 	t.Helper()
 	sh := shard.Of(uid, n.Cfg.ShardCount)
@@ -116,7 +115,7 @@ func retryable(err error) bool {
 	return errors.As(err, &re) && re.IsRetryable()
 }
 
-// 端到端：登录 → 改数据 → L1 刷盘 → Redis 里能查到，profile 摘要同步更新。
+// 端到端：登录、改数据、等 L1 刷盘，然后 Redis 里能查到，摘要也跟着更新
 func TestLobbyLoginAndFlush(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -155,7 +154,7 @@ func TestLobbyLoginAndFlush(t *testing.T) {
 		t.Fatal("道具实例 ID 应由雪花生成")
 	}
 
-	// 等 L1 刷盘落地。
+	// 等 L1 刷盘落地
 	ctx := context.Background()
 	harness.Eventually(t, 10*time.Second, "L1 刷盘落地", func() bool {
 		blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModBase)).Bytes()
@@ -167,14 +166,14 @@ func TestLobbyLoginAndFlush(t *testing.T) {
 			base.GetCurrency()[uint32(protocol.CurrencyGold)] == 500
 	})
 
-	// §6.5：owner 分片在数据变更时顺带写一份只读摘要。
+	// owner 分片改数据时会顺手写一份只读摘要
 	reader := profile.NewReader(n.Redis, n.Keys)
 	harness.Eventually(t, 10*time.Second, "profile 摘要写入", func() bool {
 		p, err := reader.Get(ctx, uid)
 		return err == nil && p != nil && p.GetUid() == uid
 	})
 
-	// 背包也应落盘。
+	// 背包也应落盘
 	blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModBag)).Bytes()
 	if err != nil {
 		t.Fatalf("背包未落盘: %v", err)
@@ -188,7 +187,7 @@ func TestLobbyLoginAndFlush(t *testing.T) {
 	}
 }
 
-// §6.2：L0 必须幂等 —— 重复提交返回首次结果，不重复到账。
+// L0 得幂等：重复提交返回第一次的结果，不重复到账
 func TestLobbyPurchaseIdempotent(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -209,7 +208,7 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 		t.Fatalf("首次到账余额 = %d，期望 60", first.GetBalance())
 	}
 
-	// 客户端重试同一订单。
+	// 客户端重试同一订单
 	second := purchase(t, n, uid, "order-42", 1)
 	if !second.GetDuplicate() {
 		t.Fatal("重复订单必须被识别")
@@ -219,13 +218,13 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 			first.GetBalance(), second.GetBalance())
 	}
 
-	// 换个订单号才会真正再次到账。
+	// 换个订单号才会真正再次到账
 	third := purchase(t, n, uid, "order-43", 1)
 	if third.GetBalance() != 120 {
 		t.Fatalf("第二笔订单后余额 = %d，期望 120", third.GetBalance())
 	}
 
-	// L0 是写穿：不等 ticker，Redis 里立刻就有。
+	// L0 写穿：不等 ticker，Redis 里立刻就有
 	ctx := context.Background()
 	blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModBase)).Bytes()
 	if err != nil {
@@ -238,7 +237,7 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 	}
 }
 
-// §8 端到端：扣道具 → 写穿 tx → job 投递 → 接收方幂等入账。
+// 端到端：扣道具、写穿 tx、投 job、接收方幂等入账
 func TestCrossShardTransferEndToEnd(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -254,7 +253,7 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 给发起方发点货（走内部通道）。
+	// 给发起方发点货（走内部通道）
 	grantItem(t, n, from, 100, 10)
 
 	if err := lobbyCall(t, n, from, protocol.CmdTransfer, &pb.TransferJob{
@@ -265,7 +264,7 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 		t.Fatalf("发起转移失败: %v", err)
 	}
 
-	// 发起方立刻扣除（内存），并已写穿。
+	// 发起方立刻扣除（内存），并已写穿
 	var bag pb.GetBagResp
 	harness.Eventually(t, 10*time.Second, "发起方完成扣除", func() bool {
 		if err := lobbyCall(t, n, from, protocol.CmdGetBag, &pb.GetBagReq{}, &bag); err != nil {
@@ -274,7 +273,7 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 		return countTpl(bag.GetBag(), 100) == 6
 	})
 
-	// 接收方经由 job 中转层入账。
+	// 接收方经由 job 中转层入账
 	harness.Eventually(t, 20*time.Second, "接收方入账", func() bool {
 		var b pb.GetBagResp
 		if err := lobbyCall(t, n, to, protocol.CmdGetBag, &pb.GetBagReq{}, &b); err != nil {
@@ -283,7 +282,7 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 		return countTpl(b.GetBag(), 100) == 4
 	})
 
-	// 资源既没蒸发也没复制。
+	// 资源既没蒸发也没复制
 	var fromBag, toBag pb.GetBagResp
 	_ = lobbyCall(t, n, from, protocol.CmdGetBag, &pb.GetBagReq{}, &fromBag)
 	_ = lobbyCall(t, n, to, protocol.CmdGetBag, &pb.GetBagReq{}, &toBag)
@@ -294,7 +293,7 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 	}
 }
 
-// 余额/道具不足时必须整体失败，不能扣一半。
+// 不够的时候要整体失败，不能扣一半
 func TestTransferInsufficientIsAtomic(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -325,14 +324,14 @@ func TestTransferInsufficientIsAtomic(t *testing.T) {
 	}
 }
 
-// 不属于本实例的分片必须明确回「重试」，而不是静默丢弃或错误服务。
+// 不归本实例的分片要明确回一个可重试的错，不能静默丢掉
 func TestRequestToUnownedShardIsRejected(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
 
 	harness.Eventually(t, 20*time.Second, "认领分片", func() bool { return svc.Owns(1) })
 
-	// 直接发到一个不存在的分片号：没有订阅者，客户端应拿到可重试的错误。
+	// 直接发到一个不存在的分片号：没有订阅者，客户端应拿到可重试的错误
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	err := n.Bus.Call(ctx, subject.LobbyReq(testShards+5, protocol.CmdGetBag.Name()),
@@ -352,7 +351,7 @@ func countTpl(bag *pb.PlayerBag, tpl uint32) int64 {
 	return n
 }
 
-// grantItem 通过内部通道发放道具。
+// grantItem 走内部通道发道具
 func grantItem(t *testing.T, n *node.Node, uid uint64, tpl uint32, count int64) {
 	t.Helper()
 	sh := shard.Of(uid, n.Cfg.ShardCount)
@@ -376,7 +375,7 @@ func grantItem(t *testing.T, n *node.Node, uid uint64, tpl uint32, count int64) 
 	t.Fatalf("发放道具失败: %v", lastErr)
 }
 
-// purchase 走完整的充值路径：配置商品 + 渠道回执验签。
+// purchase 走完整充值路径：配置里的商品加渠道回执验签
 func purchase(t *testing.T, n *node.Node, uid uint64, orderID string, product uint32) *pb.PurchaseResp {
 	t.Helper()
 	conf := gameconfProduct(t, product)
@@ -399,7 +398,7 @@ func purchase(t *testing.T, n *node.Node, uid uint64, orderID string, product ui
 	return &resp
 }
 
-// gameconfProduct 返回商品定价，用于构造回执签名。
+// gameconfProduct 返回商品定价，拿来构造回执签名
 func gameconfProduct(t *testing.T, id uint32) int64 {
 	t.Helper()
 	c := gameconf.Default()

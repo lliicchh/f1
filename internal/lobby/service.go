@@ -29,10 +29,7 @@ import (
 	"github.com/gamedev/f1/pkg/xtx"
 )
 
-// Service 是 Lobby 服务。
-//
-// Lobby 是玩家对象的容器，同时跑玩家的业务逻辑，二者在同一进程内（§2.2）。
-// 它是分片独占的，绝不使用 queue group（§2.3 / D1）。
+// Service Lobby 服务。分片独占，不用 queue group
 type Service struct {
 	node     *node.Node
 	shards   *shardsvc.Service
@@ -41,26 +38,24 @@ type Service struct {
 	sessions *session.Store
 	js       *bus.JS
 
-	// conf 是热可替换的游戏配置（评审 P1-3）。
+	// conf 可热替换的游戏配置
 	conf *gameconf.Store
-	// jackpot 管理累积奖池（评审 P1-5）。
+	// jackpot 管累积奖池
 	jackpot *jackpot.Manager
-	// ledger 读取资金流水，供 GM 查询与对账（评审 P1-2）。
+	// ledger 读流水，GM 查询和对账用
 	ledger *ledger.Reader
-	// signer 校验内部 / GM 命令的签名（评审 P0-1）。
+	// signer 验内部和 GM 命令的签名
 	signer *authz.Signer
-	// payment 校验充值回执（评审 P0-2）。
+	// payment 验充值回执
 	payment payment.Verifier
 
 	consumers []jetstream.ConsumeContext
 	orderTTL  time.Duration
 
-	// jobSem 限制并发转发的 job 数，避免 JetStream 一次性推来的大批任务
-	// 把 Lobby 的出向请求打爆。
+	// jobSem 限制同时转发的 job 数，免得 JetStream 一次推一大批把出向请求打爆
 	jobSem chan struct{}
 }
 
-// New 构造 Lobby 服务。
 func New() *Service {
 	return &Service{
 		orderTTL: 30 * 24 * time.Hour,
@@ -68,21 +63,19 @@ func New() *Service {
 	}
 }
 
-// Name 实现 node.Service。
 func (s *Service) Name() string { return "lobby" }
 
-// ShardOf 返回 uid 所属分片：lobbyShard(uid) = uid % 1024（§4.1）。
 func (s *Service) ShardOf(uid uint64) uint32 { return shard.Of(uid, s.node.Cfg.ShardCount) }
 
-// Owns 报告 uid 所属分片是否由本实例持有并已开始服务。
+// Owns 报告 uid 所属分片是否由本实例持有并已开始服务
 //
-// 供运维接口与测试判断「这个玩家现在归谁」，不参与请求路由 ——
-// 路由由 subject 决定，这里只是观察窗口。
+// 供运维接口与测试判断「这个玩家现在归谁」，不参与请求路由。
+// 路由由 subject 决定，这里只是观察窗口
 func (s *Service) Owns(uid uint64) bool {
 	return s.shards != nil && s.shards.Owns(uid)
 }
 
-// OwnedShards 返回本实例持有的分片列表。
+// OwnedShards 返回本实例持有的分片列表
 func (s *Service) OwnedShards() []uint32 {
 	if s.shards == nil || s.shards.Claimer() == nil {
 		return nil
@@ -90,7 +83,6 @@ func (s *Service) OwnedShards() []uint32 {
 	return s.shards.Claimer().Owned()
 }
 
-// Start 启动服务。
 func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.node = n
 	s.profiles = profile.NewReader(n.Redis, n.Keys)
@@ -123,7 +115,7 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 		Kind: shard.KindLobby,
 		Node: n,
 		Wildcard: func(sh uint32) string {
-			// 不带 queue group：分片独占性正是靠「同一 subject 只有一个订阅者」保证的（§4.3）。
+			// 不带 queue group：分片独占靠的就是同一 subject 只有一个订阅者
 			return subject.LobbyShardWildcard(sh)
 		},
 		Factory: func(o shard.Ownership, svc *shardsvc.Service) shardsvc.State {
@@ -134,7 +126,7 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 		return err
 	}
 
-	// job.* 必达任务：跨分片转移与发信（§5.2 / §8）。
+	// job.* 是必达任务，跨分片转移和发信走这里
 	js, jerr := n.Bus.NewJetStream(ctx)
 	if jerr != nil {
 		return fmt.Errorf("初始化 JetStream 失败: %w", jerr)
@@ -147,10 +139,10 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	return nil
 }
 
-// NotifyClients 实现 node.Service。Lobby 不直连客户端，无需通知。
+// NotifyClients 空实现，Lobby 不直连客户端
 func (s *Service) NotifyClients(ctx context.Context) {}
 
-// StopAccepting 停止接新请求：释放全部分片（各自全量刷盘）。
+// StopAccepting 停接新请求并释放全部分片，各分片会各自刷盘
 func (s *Service) StopAccepting(ctx context.Context) {
 	for _, cc := range s.consumers {
 		cc.Stop()
@@ -158,10 +150,8 @@ func (s *Service) StopAccepting(ctx context.Context) {
 	s.shards.StopAccepting(ctx)
 }
 
-// FlushAll 确认刷盘完成。
 func (s *Service) FlushAll(ctx context.Context) error { return s.shards.FlushAll(ctx) }
 
-// Close 释放资源。
 func (s *Service) Close(ctx context.Context) { s.shards.Close(ctx) }
 
 // ---------------------------------------------------------------------------
@@ -169,7 +159,7 @@ func (s *Service) Close(ctx context.Context) { s.shards.Close(ctx) }
 // ---------------------------------------------------------------------------
 
 func (s *Service) startJobConsumers(ctx context.Context) error {
-	// 转移任务。
+	// 转移任务
 	cc, err := s.js.Consume(ctx, bus.ConsumerOptions{
 		Durable:    "lobby-transfer",
 		Filter:     subject.JobTransferWildcard,
@@ -182,7 +172,7 @@ func (s *Service) startJobConsumers(ctx context.Context) error {
 	}
 	s.consumers = append(s.consumers, cc)
 
-	// 发信任务。
+	// 发信任务
 	cc, err = s.js.Consume(ctx, bus.ConsumerOptions{
 		Durable:    "lobby-mail",
 		Filter:     subject.JobMailSend,
@@ -195,7 +185,7 @@ func (s *Service) startJobConsumers(ctx context.Context) error {
 	}
 	s.consumers = append(s.consumers, cc)
 
-	// 战斗发奖任务。
+	// 战斗发奖任务
 	cc, err = s.js.Consume(ctx, bus.ConsumerOptions{
 		Durable:    "lobby-battle",
 		Filter:     subject.JobBattleSettle,
@@ -224,10 +214,9 @@ func (s *Service) onBattleJob(jm *bus.JobMsg) {
 	s.forward(jm, target, protocol.CmdBattleSettle, &res)
 }
 
-// onTransferJob 把必达任务转发给目标 uid 所属分片的 owner。
+// onTransferJob 把任务转给目标 uid 所在分片的 owner
 //
-// 多个 Lobby 实例共用同一个 durable，竞争的是「谁来搬运」而不是「谁持有数据」，
-// 因此不违反 §2.3 的「持有数据的服务不用 queue group」。
+// 多个实例共用一个 durable，竞争的是谁来搬运，不是谁持有数据
 func (s *Service) onTransferJob(jm *bus.JobMsg) {
 	var job pb.TransferJob
 	if err := bus.Unpack(jm.Env, &job); err != nil {
@@ -248,7 +237,7 @@ func (s *Service) onMailJob(jm *bus.JobMsg) {
 	s.forward(jm, job.GetToUid(), protocol.CmdApplyMail, &job)
 }
 
-// forward 把任务转发给目标分片 owner，成功才 Ack。
+// forward 把任务转给目标分片的 owner，成功才 Ack
 func (s *Service) forward(jm *bus.JobMsg, toUID uint64, cmd protocol.Cmd, body proto.Message) {
 	if toUID == 0 {
 		logx.Error("任务缺少目标 uid，终止投递", "subject", jm.Subject)
@@ -259,7 +248,7 @@ func (s *Service) forward(jm *bus.JobMsg, toUID uint64, cmd protocol.Cmd, body p
 	select {
 	case s.jobSem <- struct{}{}:
 	default:
-		// 并发已满，稍后重投而不是排队占住消费者。
+		// 并发满了，稍后重投，别占着消费者排队
 		_ = jm.Nak(2 * time.Second)
 		return
 	}
@@ -274,8 +263,7 @@ func (s *Service) forward(jm *bus.JobMsg, toUID uint64, cmd protocol.Cmd, body p
 		subj := subject.LobbyReq(sh, cmd.Name())
 		traceID := jm.Env.GetTraceId()
 
-		// 转发的是内部命令（apply_transfer / apply_mail / battle_settle），
-		// 必须带内部签名，否则会被目标分片的第二道鉴权拒掉。
+		// 转的是内部命令，得带签名，否则会被目标分片的第二道鉴权拒掉
 		var ack pb.Ack
 		err := s.internalCall(ctx, subj, cmd, toUID, traceID, body, &ack)
 		if err == nil {
@@ -283,8 +271,8 @@ func (s *Service) forward(jm *bus.JobMsg, toUID uint64, cmd protocol.Cmd, body p
 			return
 		}
 
-		// 分片正在交接、或 owner 暂时不可用：延迟重投。
-		// 这正是 job.* 走 JetStream 的意义 —— 丢了会导致资产不一致（§5.2）。
+		// 分片在交接或者 owner 暂时不可用，延迟重投。
+		// job.* 走 JetStream 就是为了这个，丢了会造成资产不一致
 		delay := backoff(jm.Deliveries())
 		logx.Trace(traceID).Warn("转发必达任务失败，稍后重投",
 			"subject", subj, "to_uid", toUID, "deliveries", jm.Deliveries(),
@@ -308,7 +296,7 @@ func backoff(deliveries uint64) time.Duration {
 	}
 }
 
-// publishTransfer 投递一笔转移任务。
+// publishTransfer 投递一笔转移任务
 func (s *Service) publishTransfer(ctx context.Context, rec *xtx.Record, traceID string) error {
 	job := &pb.TransferJob{
 		Txid:          rec.TxID,
@@ -320,12 +308,12 @@ func (s *Service) publishTransfer(ctx context.Context, rec *xtx.Record, traceID 
 		Reason:        rec.Reason,
 		CreatedAt:     rec.CreatedAt,
 	}
-	// msgID 用 txid：JetStream 层面去重，与接收方的 SETNX 幂等形成双保险。
+	// msgID 用 txid，JetStream 先去一次重，加上接收方的 SETNX 是双保险
 	return s.js.PublishJob(ctx, subject.JobTransfer(rec.TxID),
 		protocol.CmdApplyTransfer, rec.ToUID, traceID, rec.TxID, job)
 }
 
-// SendMail 通过必达任务给任意玩家发信（可离线）。
+// SendMail 通过必达任务给任意玩家发信，离线也行
 func (s *Service) SendMail(ctx context.Context, toUID uint64, mail *pb.Mail, traceID string) error {
 	sf, err := s.node.NextID()
 	if err != nil {
@@ -336,9 +324,8 @@ func (s *Service) SendMail(ctx context.Context, toUID uint64, mail *pb.Mail, tra
 	return s.js.PublishJob(ctx, subject.JobMailSend, protocol.CmdApplyMail, toUID, traceID, txid, job)
 }
 
-// notifyFriendAdded 通知对方「有人加你为好友」。
-//
-// 对方可能在别的分片甚至不在线，因此走 job 中转层而不是直接改对方内存（§8）。
+// notifyFriendAdded 告诉对方有人加了你。
+// 对方可能在别的分片甚至不在线，所以走 job，不直接改人家内存
 func (s *Service) notifyFriendAdded(from, to uint64, traceID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -355,9 +342,8 @@ func (s *Service) notifyFriendAdded(from, to uint64, traceID string) {
 	}()
 }
 
-// fallbackToMailbox 在背包塞不下时把资产写入待领取队列，等玩家上线消费（§6.5）。
-//
-// 绝不能默默丢弃：那是资产不一致。
+// fallbackToMailbox 背包塞不下时把东西转进待领取队列，等玩家上线再拿。
+// 不能默默丢掉，那是资产不一致
 func (s *Service) fallbackToMailbox(uid uint64, job *pb.TransferJob, traceID string) {
 	mail := &pb.Mail{
 		Title:       "背包已满，附件转存",
@@ -379,11 +365,9 @@ func (s *Service) fallbackToMailbox(uid uint64, job *pb.TransferJob, traceID str
 	}()
 }
 
-// indexGuildMember 把玩家登记进公会成员索引。
+// indexGuildMember 把玩家登记进公会成员索引
 //
-// 公会广播需要成员列表才能按 gateID 聚合，而成员关系存在各自玩家的 social 模块里、
-// 分散在不同分片，无法在广播时现查 —— 因此维护一份 Redis 索引作为读模型，
-// 与 profile 摘要同理（§6.5）。
+// 成员关系散在各玩家的 social 模块里，广播时现查不现实，所以单独维护一份索引
 func (s *Service) indexGuildMember(guildID, uid uint64) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -395,13 +379,13 @@ func (s *Service) indexGuildMember(guildID, uid uint64) {
 }
 
 // ---------------------------------------------------------------------------
-// 补偿扫描器（§8）
+// 补偿扫描器
 // ---------------------------------------------------------------------------
 
-// scanPendingTx 重投本分片中超时未完成的 PENDING 转移。
+// scanPendingTx 重投本分片里超时没完成的转移
 //
-// 由分片 Tick 触发，因此只有 owner 会扫自己的分片，天然分布、不会重复扫。
-// 在 Actor 里只做投递，实际 IO 在独立 goroutine。
+// 由分片 Tick 触发，只有 owner 会扫自己的分片，天然分布不会重复。
+// Actor 里只负责发起，IO 在独立 goroutine
 func (s *Service) scanPendingTx(sh uint32) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -437,9 +421,7 @@ func (s *Service) scanPendingTx(sh uint32) {
 // 下行推送
 // ---------------------------------------------------------------------------
 
-// pushToPlayer 给单个在线玩家推送。
-//
-// 走 push.gate.{gateID} 定向推送：网关订阅数恒定，与在线人数无关（§9.1 / D4）。
+// pushToPlayer 给单个在线玩家推送，走 push.gate.{gateID}
 func (s *Service) pushToPlayer(p *Player, push protocol.Push, body proto.Message, traceID string) {
 	if !p.Online || p.GateID == "" {
 		return
@@ -461,11 +443,9 @@ func (s *Service) pushToPlayer(p *Player, push protocol.Push, body proto.Message
 	}
 }
 
-// PublishPlayerEvent 发布玩家事件（evt.player.{uid}.{event}，§5.1）。
+// PublishPlayerEvent 发玩家事件，不保证投递也不等应答
 //
-// 事件是「广播给任何关心的人」，不保证投递、不等应答：
-// 活动系统、数据上报、成就统计这类旁路消费者订阅它，
-// 不会给玩家主流程增加任何同步开销。丢一条不影响资产，因此走 Core NATS。
+// 活动、埋点、成就这类旁路消费者订阅它，丢一条不影响资产，所以走 Core NATS
 func (s *Service) PublishPlayerEvent(uid uint64, event string, body proto.Message, traceID string) {
 	if err := s.node.Bus.Publish(subject.PlayerEvt(uid, event),
 		protocol.CmdUnknown, uid, traceID, body); err != nil {
@@ -473,7 +453,7 @@ func (s *Service) PublishPlayerEvent(uid uint64, event string, body proto.Messag
 	}
 }
 
-// Broadcast 全服公告走 push.broadcast（§9.3）。
+// Broadcast 全服公告走 push.broadcast
 func (s *Service) Broadcast(push protocol.Push, body proto.Message, traceID string) error {
 	raw, err := proto.Marshal(body)
 	if err != nil {
@@ -499,13 +479,11 @@ var (
 // 配置 / 奖池 / 内部命令
 // ---------------------------------------------------------------------------
 
-// Conf 返回当前生效的游戏配置。
 func (s *Service) Conf() *gameconf.Config { return s.conf.Get() }
 
-// ReloadConf 热替换游戏配置。校验不过则保持原配置不动。
+// ReloadConf 热替换配置，校验不过就保持原样
 //
-// 版本随每个回合落盘：热更之后开的局记新版本，已经开着的局仍记旧版本，
-// 复算时各取各的，不会串。
+// 版本跟着回合走：热更之后开的局记新版本，已经开着的局还是旧版本，复算不会串
 func (s *Service) ReloadConf(path string) error {
 	c, err := gameconf.Load(path)
 	if err != nil {
@@ -521,19 +499,15 @@ func (s *Service) ReloadConf(path string) error {
 	return nil
 }
 
-// Ledger 返回流水读取器。
 func (s *Service) Ledger() *ledger.Reader { return s.ledger }
 
-// Signer 返回内部命令签名器。
 func (s *Service) Signer() *authz.Signer { return s.signer }
 
-// Jackpot 返回奖池管理器。
 func (s *Service) Jackpot() *jackpot.Manager { return s.jackpot }
 
-// contributeJackpot 往奖池注入。
+// contributeJackpot 往奖池注入，尽力而为
 //
-// best-effort：失败只会让池子少涨。玩家那份钱已经原子扣掉并记了 JP_CONTRIB 流水，
-// 因此差额可以按流水对账补回 —— 这是「先保证玩家侧正确，再保证池子侧正确」的取舍。
+// 失败只是池子少涨，玩家那份钱已经扣掉并记了 JP_CONTRIB，差额照流水补得回来
 func (s *Service) contributeJackpot(pool string, amount int64) {
 	if s.jackpot == nil || amount <= 0 {
 		return
@@ -551,7 +525,7 @@ func (s *Service) contributeJackpot(pool string, amount int64) {
 	}()
 }
 
-// claimJackpot 处理中奖：原子清池 + 落 PENDING 记录，再把派彩交给中转层。
+// claimJackpot 处理中奖：清池并落一条 PENDING 记录，再把派彩交给中转层
 func (s *Service) claimJackpot(pool string, uid, roundID uint64, traceID string) {
 	if s.jackpot == nil {
 		return
@@ -583,7 +557,7 @@ func (s *Service) claimJackpot(pool string, uid, roundID uint64, traceID string)
 			"pool", pool, "uid", uid, "amount", payout.Amount, "txid", txid)
 
 		if err := s.deliverJackpot(ctx, payout, traceID); err != nil {
-			// 派彩没送到不要紧：PENDING 记录还在，补偿扫描会重投。
+			// 没送到不要紧，PENDING 记录还在，扫描会重投
 			logx.Trace(traceID).Error("奖池派彩投递失败，等待补偿扫描重投",
 				"txid", txid, "err", err)
 			return
@@ -597,7 +571,7 @@ func (s *Service) claimJackpot(pool string, uid, roundID uint64, traceID string)
 	}()
 }
 
-// deliverJackpot 把奖池派彩打给玩家所在分片。幂等由 txid 保证。
+// deliverJackpot 把派彩打给玩家所在分片，幂等靠 txid
 func (s *Service) deliverJackpot(ctx context.Context, p *jackpot.Payout, traceID string) error {
 	sh := s.ShardOf(p.UID)
 	req := &pb.JackpotClaimReq{
@@ -609,9 +583,7 @@ func (s *Service) deliverJackpot(ctx context.Context, p *jackpot.Payout, traceID
 		protocol.CmdApplyJackpot, p.UID, traceID, req, &resp)
 }
 
-// scanJackpotPayouts 重投超时未完成的奖池派彩。
-//
-// 与 §8 的跨分片补偿是同一个模式：PENDING 索引 + 定期重投 + 接收方幂等。
+// scanJackpotPayouts 重投超时没完成的奖池派彩，和跨分片补偿是一个套路
 func (s *Service) scanJackpotPayouts() {
 	if s.jackpot == nil {
 		return
@@ -642,10 +614,9 @@ func (s *Service) scanJackpotPayouts() {
 	}()
 }
 
-// internalCall 发起一条带签名的内部命令。
+// internalCall 发一条带签名的内部命令
 //
-// 没有内部密钥时直接失败，而不是发一条没签名的命令碰运气 ——
-// 后者会在对端被拒，错误却发生在很远的地方，排查成本高得多。
+// 没密钥就直接失败，不发没签名的请求，那样错误会在很远的地方冒出来，难查
 func (s *Service) internalCall(ctx context.Context, subj string, cmd protocol.Cmd,
 	uid uint64, traceID string, body, out proto.Message) error {
 

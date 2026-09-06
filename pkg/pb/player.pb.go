@@ -28,7 +28,7 @@ type PlayerBase struct {
 	Avatar        string                 `protobuf:"bytes,3,opt,name=avatar,proto3" json:"avatar,omitempty"`
 	Level         uint32                 `protobuf:"varint,4,opt,name=level,proto3" json:"level,omitempty"`
 	Exp           uint64                 `protobuf:"varint,5,opt,name=exp,proto3" json:"exp,omitempty"`
-	Currency      map[uint32]int64       `protobuf:"bytes,6,rep,name=currency,proto3" json:"currency,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // CurrencyType -> amount
+	Currency      map[uint32]int64       `protobuf:"bytes,6,rep,name=currency,proto3" json:"currency,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // 币种 -> 数量
 	CreatedAt     int64                  `protobuf:"varint,7,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	LastLogin     int64                  `protobuf:"varint,8,opt,name=last_login,json=lastLogin,proto3" json:"last_login,omitempty"`
 	LastLogout    int64                  `protobuf:"varint,9,opt,name=last_logout,json=lastLogout,proto3" json:"last_logout,omitempty"`
@@ -147,7 +147,7 @@ func (x *PlayerBase) GetGuildId() uint64 {
 
 type Item struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	InstanceId    uint64                 `protobuf:"varint,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"` // 雪花 ID，唯一
+	InstanceId    uint64                 `protobuf:"varint,1,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"` // 雪花 ID
 	TplId         uint32                 `protobuf:"varint,2,opt,name=tpl_id,json=tplId,proto3" json:"tpl_id,omitempty"`
 	Count         int64                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
 	ObtainedAt    int64                  `protobuf:"varint,4,opt,name=obtained_at,json=obtainedAt,proto3" json:"obtained_at,omitempty"`
@@ -284,7 +284,7 @@ func (x *PlayerBag) GetCapacity() uint32 {
 type Quest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	QuestId       uint32                 `protobuf:"varint,1,opt,name=quest_id,json=questId,proto3" json:"quest_id,omitempty"`
-	State         uint32                 `protobuf:"varint,2,opt,name=state,proto3" json:"state,omitempty"` // 0=未接 1=进行中 2=可领奖 3=已完成
+	State         uint32                 `protobuf:"varint,2,opt,name=state,proto3" json:"state,omitempty"` // 0 未接 1 进行中 2 可领奖 3 已完成
 	Progress      int64                  `protobuf:"varint,3,opt,name=progress,proto3" json:"progress,omitempty"`
 	Target        int64                  `protobuf:"varint,4,opt,name=target,proto3" json:"target,omitempty"`
 	AcceptAt      int64                  `protobuf:"varint,5,opt,name=accept_at,json=acceptAt,proto3" json:"accept_at,omitempty"`
@@ -705,8 +705,7 @@ func (x *PlayerMail) GetMails() []*Mail {
 	return nil
 }
 
-// profile:{uid} 只读摘要（设计文档 §6.5，CQRS 读模型）。
-// 以 Redis HASH 存储，任意进程可直读，不唤醒玩家对象。
+// profile:{uid} 是只读摘要，存成 Redis HASH，任何进程都能直读，不唤醒玩家对象。
 type Profile struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
@@ -799,10 +798,9 @@ func (x *Profile) GetLastLogin() int64 {
 	return 0
 }
 
-// PlayerRG 是责任游戏（Responsible Gaming）状态，随下注原子更新。
+// PlayerRG 是责任游戏状态，随下注一起更新。
 //
-// 限额是合规要求，必须与扣款在同一个事务里推进 ——
-// 否则「扣了钱但没记进当日累计」会让限额形同虚设。
+// 限额得和扣款在同一个事务里推进，否则「扣了钱没记进当日累计」，限额就白设了。
 type PlayerRG struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Uid            uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
@@ -987,7 +985,7 @@ func (x *GachaPityState) GetTotalDraws() uint64 {
 	return 0
 }
 
-// PlayerGacha 保存各卡池的保底计数。
+// PlayerGacha 是各卡池的保底计数。
 type PlayerGacha struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`

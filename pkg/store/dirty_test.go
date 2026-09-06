@@ -15,7 +15,7 @@ func TestDirtyTakeByLevel(t *testing.T) {
 	if len(l1) != 2 {
 		t.Fatalf("L1 应取出 2 个实体，实际 %d", len(l1))
 	}
-	// L2 的脏标记不应被 L1 顺手清掉。
+	// L2 的脏标记不应被 L1 顺手清掉
 	if !d.IsDirty(1) {
 		t.Fatal("uid=1 的 L2 标记被误清")
 	}
@@ -28,7 +28,7 @@ func TestDirtyTakeByLevel(t *testing.T) {
 	}
 }
 
-// §6.3：刷盘失败重新标脏，绝不丢弃。
+// 刷盘失败重新标脏，绝不丢弃
 func TestReMarkPreservesOriginalDirtyTime(t *testing.T) {
 	d := NewDirtySet()
 	d.Mark(1, ModBase)
@@ -46,7 +46,7 @@ func TestReMarkPreservesOriginalDirtyTime(t *testing.T) {
 		t.Fatal("重新标脏后应能再取出")
 	}
 	if !again[0].DirtyAt.Equal(original) {
-		t.Fatal("重试不得把脏数据滞留时长洗白 —— 那会让真实丢失窗口指标失真")
+		t.Fatal("重试不得重置脏数据的滞留时长，那会让真实丢失窗口指标失真")
 	}
 }
 
@@ -94,7 +94,7 @@ func TestTakeOneAndClear(t *testing.T) {
 	}
 }
 
-// §6.3：刷盘时刻打散，避免 1024 分片同秒刷造成 Redis 尖峰。
+// 刷盘时刻打散，避免 1024 分片同秒刷造成 Redis 尖峰
 func TestDeadlineSpreadsAcrossShards(t *testing.T) {
 	now := time.Now()
 	interval := 5 * time.Second
@@ -116,7 +116,7 @@ func TestDeadlineSpreadsAcrossShards(t *testing.T) {
 }
 
 func TestModuleLevels(t *testing.T) {
-	// §6.2：货币/等级/背包属 L1；设置/社交属 L2。
+	// 货币/等级/背包属 L1；设置/社交属 L2
 	for _, m := range []Module{ModBase, ModBag, ModQuest} {
 		if ModuleLevel(m) != L1 {
 			t.Errorf("%s 应为 L1", m)

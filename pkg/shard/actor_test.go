@@ -18,7 +18,7 @@ type fakeState struct {
 	closed   ReleaseReason
 	initErr  error
 	initDone bool
-	// goroutines 记录处理消息的 goroutine 身份，用于验证串行性。
+	// goroutines 记录处理消息的 goroutine 身份，用于验证串行性
 	concurrent atomic.Int32
 	maxConc    atomic.Int32
 	onHandle   func()
@@ -64,7 +64,7 @@ func (f *fakeState) counts() (int, int) {
 }
 
 func TestShardOf(t *testing.T) {
-	// §4.1：lobbyShard(uid) = uid % 1024
+	// lobbyShard(uid) = uid % 1024
 	for _, c := range []struct {
 		id   uint64
 		want uint32
@@ -77,7 +77,7 @@ func TestShardOf(t *testing.T) {
 	}
 }
 
-// §4.4：同一分片的处理必须严格串行 —— 这是「不存在并发扣道具类问题」的全部依据。
+// 同一分片的处理必须严格串行，这是「不存在并发扣道具类问题」的全部依据
 func TestActorSerializesHandling(t *testing.T) {
 	st := &fakeState{onHandle: func() { time.Sleep(time.Millisecond) }}
 	rt := NewRuntime(KindLobby, 128, 70, 50*time.Millisecond, func(o Ownership) State { return st })
@@ -113,7 +113,7 @@ func TestActorSerializesHandling(t *testing.T) {
 	}
 }
 
-// Init 失败必须让认领回滚。
+// Init 失败必须让认领回滚
 func TestStartFailsWhenInitFails(t *testing.T) {
 	st := &fakeState{initErr: errors.New("加载失败")}
 	rt := NewRuntime(KindLobby, 16, 70, time.Second, func(o Ownership) State { return st })
@@ -127,7 +127,7 @@ func TestStartFailsWhenInitFails(t *testing.T) {
 	}
 }
 
-// mailbox 满时必须立即返回错误，绝不阻塞调用方（NATS 回调是单 goroutine）。
+// mailbox 满时必须立即返回错误，绝不阻塞调用方（NATS 回调是单 goroutine）
 func TestMailboxFullNeverBlocks(t *testing.T) {
 	block := make(chan struct{})
 	st := &fakeState{onHandle: func() { <-block }}
@@ -138,7 +138,7 @@ func TestMailboxFullNeverBlocks(t *testing.T) {
 	}
 	defer func() { close(block); rt.Stop(1, ReleaseGraceful) }()
 
-	// 第一条被取走并卡住，随后 2 条填满 mailbox。
+	// 第一条被取走并卡住，随后 2 条填满 mailbox
 	for i := 0; i < 3; i++ {
 		_ = rt.Do(1, func() { st.Handle(nil) })
 	}
@@ -151,11 +151,11 @@ func TestMailboxFullNeverBlocks(t *testing.T) {
 			t.Fatalf("mailbox 满应返回 ErrMailboxFull，实际 %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("投递阻塞了 —— 会把 NATS 回调 goroutine 拖死")
+		t.Fatal("投递阻塞了，会阻塞 NATS 回调 goroutine")
 	}
 }
 
-// 单条消息 panic 不应带走整个分片：那意味着一批玩家全部不可用。
+// 单条消息 panic 不应带走整个分片：那意味着一批玩家全部不可用
 func TestPanicIsIsolated(t *testing.T) {
 	st := &fakeState{}
 	rt := NewRuntime(KindLobby, 16, 70, time.Hour, func(o Ownership) State { return st })

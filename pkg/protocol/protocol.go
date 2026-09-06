@@ -1,13 +1,13 @@
-// Package protocol 定义命令号、命令权限级别、错误码与 push 号。
+// Package protocol 命令号、权限级别、错误码和推送号
 //
-// 命令号既作为 Envelope.cmd 的数值，也作为 NATS subject 的最后一段（名字），
-// 二者由同一张表维护，避免两处漂移。
+// 命令号既是 Envelope.cmd 的数值，也是 subject 的最后一段，同一张表维护，
+// 免得两边漂移
 package protocol
 
-// Cmd 是请求命令号。
+// Cmd 请求命令号
 type Cmd uint32
 
-// 段位划分：1xx 会话 / 2xx 玩家 / 3xx 房间 / 4xx 匹配 / 5xx 聊天 / 6xx 世界 / 7xx 内部 / 8xx GM / 9xx 控制面
+// 号段：1xx 会话 2xx 玩家 3xx 房间 4xx 匹配 5xx 聊天 6xx 世界 7xx 内部 8xx GM 9xx 控制面
 const (
 	CmdUnknown Cmd = 0
 
@@ -15,6 +15,15 @@ const (
 	CmdLogin     Cmd = 101
 	CmdLogout    Cmd = 102
 	CmdHeartbeat Cmd = 103
+
+	// --- 账号（Account）---
+	//
+	// 都是客户端级。渠道校验不过就什么都拿不到，没有可提权的东西；
+	// 而且网关不持有内部密钥，定成 Internal 它根本调不出去
+	CmdAuthChannel   Cmd = 104 // 渠道凭证换我们自己的 token，登录前调
+	CmdBindChannel   Cmd = 105 // 已登录状态下再绑一个渠道
+	CmdUnbindChannel Cmd = 106
+	CmdListBindings  Cmd = 107
 
 	// --- 玩家逻辑（Lobby）---
 	CmdUseItem       Cmd = 203
@@ -75,20 +84,19 @@ const (
 	CmdShutdown Cmd = 902
 )
 
-// Level 是命令的调用权限级别。
+// Level 命令的调用权限
 //
-// 这张表是 P0 安全修复的核心：以前「哪些命令客户端能调」散落在网关的一个 switch 里，
-// 新增一个内部命令时忘了排除，默认行为就是放行 —— add_currency 就是这么漏出去的。
-// 现在级别标在命令定义处，网关只放行 Client，Lobby 侧对 Internal/GM 再验一次签名，
-// 忘记标注的命令默认落到 LevelInternal（最严），漏配的后果是「调不通」而不是「被刷钱」。
+// 级别标在命令定义处，不散落在网关的 switch 里。网关只放行 Client，
+// Lobby 对 Internal 和 GM 再验一次签名。忘了登记的默认落到最严的 Internal，
+// 漏配的后果是调不通，而不是被人刷钱
 type Level uint8
 
 const (
-	// LevelClient 客户端可直接调用。
+	// LevelClient 客户端可直接调用
 	LevelClient Level = iota
-	// LevelInternal 仅服务端内部调用，需携带内部签名。
+	// LevelInternal 仅服务端内部调用，需携带内部签名
 	LevelInternal
-	// LevelGM 仅 GM / 运营后台调用，需携带内部签名 + GM 身份。
+	// LevelGM 仅 GM / 运营后台调用，需携带内部签名 + GM 身份
 	LevelGM
 )
 
@@ -103,12 +111,13 @@ func (l Level) String() string {
 	}
 }
 
-// clientCmds 是唯一的「客户端可调用」白名单。
+// clientCmds 客户端可调用的白名单
 //
-// 加命令到这里之前问一句：这个命令能不能让玩家自己决定给自己加多少钱？
-// 只要答案不是「绝对不能」，它就不属于这里。
+// 往里加之前先问一句：这个命令能不能让玩家自己决定给自己加多少钱？
 var clientCmds = map[Cmd]bool{
 	CmdLogin: true, CmdLogout: true, CmdHeartbeat: true,
+	CmdAuthChannel: true, CmdBindChannel: true,
+	CmdUnbindChannel: true, CmdListBindings: true,
 	CmdUseItem: true, CmdGetBag: true,
 	CmdAcceptQuest: true, CmdQuestProgress: true,
 	CmdGetSocial: true, CmdAddFriend: true,
@@ -127,7 +136,7 @@ var gmCmds = map[Cmd]bool{
 	CmdGMGrant: true, CmdGMQuery: true, CmdGMKick: true, CmdGMSetRG: true,
 }
 
-// Level 返回命令的权限级别。未登记的命令一律按 LevelInternal 处理。
+// Level 返回命令的权限级别，没登记的一律当 Internal
 func (c Cmd) Level() Level {
 	if clientCmds[c] {
 		return LevelClient
@@ -138,11 +147,12 @@ func (c Cmd) Level() Level {
 	return LevelInternal
 }
 
-// ClientCallable 报告命令是否允许由客户端直接发起。
 func (c Cmd) ClientCallable() bool { return c.Level() == LevelClient }
 
 var cmdNames = map[Cmd]string{
 	CmdLogin: "login", CmdLogout: "logout", CmdHeartbeat: "heartbeat",
+	CmdAuthChannel: "auth_channel", CmdBindChannel: "bind_channel",
+	CmdUnbindChannel: "unbind_channel", CmdListBindings: "list_bindings",
 	CmdUseItem: "use_item", CmdGetBag: "get_bag",
 	CmdAcceptQuest: "accept_quest", CmdQuestProgress: "quest_progress",
 	CmdGetSocial: "get_social", CmdAddFriend: "add_friend",
@@ -171,7 +181,7 @@ var cmdByName = func() map[string]Cmd {
 	return m
 }()
 
-// Name 返回命令名，用作 subject 最后一段。
+// Name 返回命令名，用作 subject 最后一段
 func (c Cmd) Name() string {
 	if n, ok := cmdNames[c]; ok {
 		return n
@@ -181,13 +191,13 @@ func (c Cmd) Name() string {
 
 func (c Cmd) String() string { return c.Name() }
 
-// ParseCmd 按名字解析命令号。
+// ParseCmd 按名字解析命令号
 func ParseCmd(name string) (Cmd, bool) {
 	c, ok := cmdByName[name]
 	return c, ok
 }
 
-// Push 是下行推送号（服务端主动下发）。
+// Push 下行推送号（服务端主动下发）
 type Push uint32
 
 const (
@@ -198,7 +208,7 @@ const (
 	PushRoomEvent    Push = 1005
 	PushBattleResult Push = 1006
 	PushAnnounce     Push = 1007 // 全服公告
-	PushMaintenance  Push = 1008 // 服务器维护，请重连（§10.3）
+	PushMaintenance  Push = 1008 // 服务器维护，请重连
 	PushItemChanged  Push = 1009
 	PushWorldBoss    Push = 1010
 	PushJackpotWon   Push = 1011 // 有人中了奖池
@@ -206,7 +216,7 @@ const (
 	PushRGNotice     Push = 1013 // 责任游戏提醒（会话时长、接近限额）
 )
 
-// ErrCode 是应答错误码（Envelope.err_code）。
+// ErrCode 应答错误码（Envelope.err_code）
 type ErrCode uint32
 
 const (
@@ -241,6 +251,15 @@ const (
 	ErrProductUnknown ErrCode = 1107 // 未知商品
 	ErrJackpotEmpty   ErrCode = 1108
 	ErrGachaPool      ErrCode = 1109
+
+	// --- 账号 ---
+	ErrChannelUnknown ErrCode = 1200 // 渠道没配 provider
+	ErrCredentialBad  ErrCode = 1201 // 渠道说这份凭证不认
+	ErrUpstreamFailed ErrCode = 1202 // 渠道自己挂了或超时，可重试
+	ErrBindConflict   ErrCode = 1203 // 该渠道账号已绑在别的 uid 上
+	ErrAlreadyBound   ErrCode = 1204 // 本 uid 在该渠道已经绑过别的账号
+	ErrNotBound       ErrCode = 1205
+	ErrLastBinding    ErrCode = 1206 // 最后一个绑定不能解，解了账号就找不回来
 )
 
 var errText = map[ErrCode]string{
@@ -255,6 +274,10 @@ var errText = map[ErrCode]string{
 	ErrRGLimit: "已达限额", ErrSelfExcluded: "账号处于自我排除期",
 	ErrReceiptInvalid: "支付回执无效", ErrProductUnknown: "未知商品",
 	ErrJackpotEmpty: "奖池为空", ErrGachaPool: "卡池不存在",
+	ErrChannelUnknown: "渠道不支持", ErrCredentialBad: "渠道凭证无效",
+	ErrUpstreamFailed: "渠道暂时不可用，请重试", ErrBindConflict: "该渠道账号已被占用",
+	ErrAlreadyBound: "该渠道已绑定其他账号", ErrNotBound: "该渠道未绑定",
+	ErrLastBinding: "不能解绑最后一个登录方式",
 }
 
 func (e ErrCode) String() string {
@@ -264,10 +287,9 @@ func (e ErrCode) String() string {
 	return "未知错误"
 }
 
-// CurrencyType 货币类型。
+// CurrencyType 货币类型
 //
-// 金额一律用 int64 的「最小单位」（分 / 游戏币最小面额），绝不用浮点：
-// 真钱场景下 float 的舍入误差会直接变成对账差额。
+// 金额统一用 int64 的最小单位，不用浮点，浮点的舍入误差会直接变成对账差额
 type CurrencyType uint32
 
 const (

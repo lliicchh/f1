@@ -1,9 +1,8 @@
-// Package match 实现匹配服：匹配池，按「模式×段位」分片（§2.1）。
+// Package match 匹配服，按模式 × 段位分桶
 //
-// 匹配池是纯内存的临时数据（L3 级别，不刷盘）：实例挂了池子清空，
-// 玩家重新排队即可，因此这里跳过 epoch fencing。
-// 但「同一个 模式×段位 只能有一个实例在撮合」这条必须成立 ——
-// 否则两个实例会把同一批玩家撮进两个房间，所以仍然走分片独占认领。
+// 匹配池纯内存，不刷盘，实例挂了池子清空玩家重排就行，所以跳过 epoch fencing。
+// 但「同一个桶只能有一个实例在撮合」这条必须成立，否则两个实例会把同一批人
+// 撮进两个房间，所以还是走分片独占认领
 package match
 
 import (
@@ -27,22 +26,21 @@ import (
 	"github.com/gamedev/f1/pkg/subject"
 )
 
-// 匹配空间：模式 × 段位。
+// 匹配空间：模式 × 段位
 const (
 	ModeCount = 8
 	TierCount = 16
 	Buckets   = ModeCount * TierCount
 )
 
-// BucketOf 把 (mode, tier) 映射成桶号。
 func BucketOf(mode, tier uint32) uint32 { return (mode%ModeCount)*TierCount + tier%TierCount }
 
-// ModeTierOf 是 BucketOf 的逆映射。
+// ModeTierOf BucketOf 的逆映射
 func ModeTierOf(bucket uint32) (mode, tier uint32) {
 	return bucket / TierCount, bucket % TierCount
 }
 
-// TeamSize 返回某模式的成队人数。真实项目应查配置表。
+// TeamSize 返回该模式几人成队
 func TeamSize(mode uint32) int {
 	switch mode {
 	case 1:
@@ -54,7 +52,7 @@ func TeamSize(mode uint32) int {
 	}
 }
 
-// MaxWait 是放宽匹配条件前的等待上限。
+// MaxWait 放宽条件前最多等多久
 const MaxWait = 30 * time.Second
 
 type waiter struct {
@@ -64,7 +62,7 @@ type waiter struct {
 	traceID string
 }
 
-// Bucket 是一个 模式×段位 的匹配池，由独占该桶的实例持有。
+// Bucket 一个模式 × 段位的匹配池，由独占这个桶的实例持有
 type Bucket struct {
 	o    shard.Ownership
 	svc  *shardsvc.Service
@@ -77,7 +75,6 @@ type Bucket struct {
 	closed bool
 }
 
-// NewBucket 构造匹配池。
 func NewBucket(o shard.Ownership, svc *shardsvc.Service, ms *Service) *Bucket {
 	mode, tier := ModeTierOf(o.Shard)
 	return &Bucket{
@@ -86,13 +83,13 @@ func NewBucket(o shard.Ownership, svc *shardsvc.Service, ms *Service) *Bucket {
 	}
 }
 
-// Init 实现 shardsvc.State。匹配池无需从任何地方恢复。
+// Init 匹配池不用从哪儿恢复，空的就行
 func (b *Bucket) Init(ctx context.Context, o shard.Ownership) error {
 	logx.Debug("匹配池就绪", "bucket", o.Shard, "mode", b.mode, "tier", b.tier)
 	return nil
 }
 
-// Handle 处理入队 / 取消。
+// Handle 处理入队 / 取消
 func (b *Bucket) Handle(m *bus.Msg) {
 	if b.closed {
 		_ = m.RespondErr(protocol.ErrUnavailable, "匹配池正在关闭，请重试")
@@ -174,7 +171,7 @@ func (b *Bucket) remove(uid uint64) {
 	metrics.MatchQueueLen.WithLabelValues(fmt.Sprint(b.mode), fmt.Sprint(b.tier)).Set(float64(len(b.queue)))
 }
 
-// Tick 周期撮合：等待越久，战力差容忍度越大。
+// Tick 定期撮合，等得越久战力差容得越宽
 func (b *Bucket) Tick(now time.Time) {
 	if b.closed {
 		return
@@ -182,19 +179,18 @@ func (b *Bucket) Tick(now time.Time) {
 	b.tryMatch()
 }
 
-// tryMatch 尝试成队。
 func (b *Bucket) tryMatch() {
 	size := TeamSize(b.mode)
 	for len(b.queue) >= size {
-		// 按战力排序后取相邻的一组，战力差最小。
+		// 按战力排序取相邻的一组，差值最小
 		sort.SliceStable(b.queue, func(i, j int) bool { return b.queue[i].power < b.queue[j].power })
 
 		team := b.queue[:size]
-		// 等待时间足够长就无条件放行，避免高战力玩家永远匹配不到。
+		// 等够久就无条件放行，免得高战力的永远匹配不上
 		oldest := time.Since(team[0].since)
 		spread := team[size-1].power - team[0].power
 		if spread > b.tolerance(oldest) {
-			// 找不到合适的一组，等下次。
+			// 这组不合适，等下次
 			if oldest < MaxWait {
 				return
 			}
@@ -214,21 +210,19 @@ func (b *Bucket) tryMatch() {
 	}
 }
 
-// tolerance 返回可接受的战力差，随等待时长线性放宽。
+// tolerance 返回能接受的战力差，等得越久越宽
 func (b *Bucket) tolerance(waited time.Duration) uint64 {
 	base := uint64(1000)
 	return base + uint64(waited/time.Second)*500
 }
 
-// OnFlushResult 匹配池不落盘，无需处理。
+// OnFlushResult 匹配池不落盘，没事干
 func (b *Bucket) OnFlushResult(res *store.Result) {}
 
-// FlushAllSync 匹配池不落盘。
+// FlushAllSync 匹配池不落盘
 func (b *Bucket) FlushAllSync(ctx context.Context) error { return nil }
 
-// Close 释放匹配池。
-//
-// 池子里的玩家会被通知重新排队 —— 匹配池是 L3 临时数据，丢了不影响资产。
+// Close 释放匹配池，池子里的人会被通知重新排队
 func (b *Bucket) Close(reason shard.ReleaseReason) {
 	b.closed = true
 	if len(b.queue) > 0 {
@@ -244,20 +238,18 @@ func (b *Bucket) Close(reason shard.ReleaseReason) {
 
 // ---------------------------------------------------------------------------
 
-// Service 是匹配服务。
+// Service 匹配服务
 type Service struct {
 	node     *node.Node
 	shards   *shardsvc.Service
 	sessions *session.Store
 }
 
-// New 构造匹配服务。
 func New() *Service { return &Service{} }
 
-// Name 实现 node.Service。
 func (s *Service) Name() string { return "match" }
 
-// OwnsBucket 报告某个 模式×段位 的匹配池是否由本实例持有。
+// OwnsBucket 报告某个桶是不是本实例在管
 func (s *Service) OwnsBucket(mode, tier uint32) bool {
 	if s.shards == nil || s.shards.Claimer() == nil {
 		return false
@@ -265,7 +257,6 @@ func (s *Service) OwnsBucket(mode, tier uint32) bool {
 	return s.shards.Claimer().Owns(BucketOf(mode, tier))
 }
 
-// Start 启动服务。
 func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.node = n
 	s.sessions = session.NewStore(n.Redis, n.Keys, n.Cfg.SessionTTL)
@@ -274,7 +265,7 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 		Kind:  shard.KindMatch,
 		Node:  n,
 		Space: Buckets,
-		// 匹配池不落盘，因此不需要 epoch fencing。
+		// 不落盘，用不上 fencing
 		SkipEpoch: true,
 		Tick:      500 * time.Millisecond,
 		Wildcard: func(bucket uint32) string {
@@ -288,22 +279,17 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	return s.shards.Start(ctx)
 }
 
-// NotifyClients 实现 node.Service。
 func (s *Service) NotifyClients(ctx context.Context) {}
 
-// StopAccepting 停止接新请求。
 func (s *Service) StopAccepting(ctx context.Context) { s.shards.StopAccepting(ctx) }
 
-// FlushAll 匹配池无数据可刷。
 func (s *Service) FlushAll(ctx context.Context) error { return s.shards.FlushAll(ctx) }
 
-// Close 释放资源。
 func (s *Service) Close(ctx context.Context) { s.shards.Close(ctx) }
 
-// createRoom 撮合成功后建房并通知玩家。
+// createRoom 撮合成功后建房并通知玩家
 //
-// roomID 在这里生成：房间分片由 roomID % 1024 决定，
-// 调用方必须先有 ID 才能选对 subject（§4.1）。
+// roomID 在这里生成，房间分片由它决定，得先有 ID 才能选对 subject
 func (s *Service) createRoom(mode, tier uint32, members []uint64, traceID string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
@@ -325,8 +311,8 @@ func (s *Service) createRoom(mode, tier uint32, members []uint64, traceID string
 				Members:   members,
 			}, &resp)
 		if err != nil {
-			// 建房失败（Room 分片正在交接、或实例刚起还没认领完）不能把玩家丢掉：
-			// 他们已经从池子里被取走了，不放回去就等于凭空消失在匹配队列里。
+			// 建房失败（分片在交接，或实例刚起还没认领完）不能把人丢了，
+			// 他们已经从池子里取出来了，不放回去就凭空消失了
 			logx.Trace(traceID).Warn("建房失败，把玩家放回匹配池",
 				"room", roomID, "shard", sh, "members", members, "err", err)
 			s.requeue(mode, tier, members, traceID)
@@ -336,18 +322,18 @@ func (s *Service) createRoom(mode, tier uint32, members []uint64, traceID string
 		logx.Trace(traceID).Info("匹配成功", "room", roomID, "mode", mode, "members", members)
 		s.pushMatchFound(members, &pb.MatchFound{RoomId: roomID, Mode: mode, Members: members}, traceID)
 
-		// 开打。
+		// 开打
 		_ = s.node.Bus.Call(ctx, subject.RoomReq(sh, protocol.CmdStartBattle.Name()),
 			protocol.CmdStartBattle, 0, traceID, &pb.RoomOpReq{RoomId: roomID}, nil)
 	}()
 }
 
-// pushMatchFound 按 gateID 聚合后推送（§9.3）。
+// pushMatchFound 按 gateID 聚合后推
 func (s *Service) pushMatchFound(members []uint64, found *pb.MatchFound, traceID string) {
 	s.pushAggregated(members, protocol.PushMatchFound, found, traceID)
 }
 
-// requeue 把一组玩家放回其所属的匹配池。
+// requeue 把一组玩家放回匹配池
 func (s *Service) requeue(mode, tier uint32, members []uint64, traceID string) {
 	for _, uid := range members {
 		uid := uid
@@ -364,7 +350,7 @@ func (s *Service) requeue(mode, tier uint32, members []uint64, traceID string) {
 			b.queue = append(b.queue, &waiter{uid: uid, since: time.Now(), traceID: traceID})
 			b.inPool[uid] = true
 		}); err != nil {
-			// 桶已不由本实例持有：告诉玩家重新入队，总好过静默丢弃。
+			// 桶不在本实例了，让玩家重新入队，总比静默丢掉强
 			logx.Trace(traceID).Warn("无法放回匹配池，通知玩家重新入队", "uid", uid, "err", err)
 			s.pushAggregated([]uint64{uid}, protocol.PushMatchFound, &pb.MatchFound{}, traceID)
 		}

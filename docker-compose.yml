@@ -118,6 +118,33 @@ services:
       ADVERTISE_ADDR: "gateway-2:7000"
     ports: ["7002:7000", "9102:9100"]
 
+  # ------------------------- Account（queue group，登录的外部 IO 都在这）-------------------------
+  # 拆出来是因为渠道校验要打第三方网络。慢和挂都只影响首登，
+  # 已经拿到票据的玩家重连走网关本地验签，到不了这儿。
+  # 多加载一份 account.env，把内部密钥覆盖成空并配上渠道参数。
+  account-1:
+    <<: *common
+    image: game/account:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: account}
+    env_file:
+      - "./${ENV_FILE:-deploy/s1.env}"
+      - "./deploy/account.env"
+    environment: {NODE_SEQ: "1", ADVERTISE_ADDR: "account-1"}
+    ports: ["9161:9100"]
+  account-2:
+    <<: *common
+    image: game/account:${TAG:-dev}
+    build:
+      context: .
+      args: {SVC: account}
+    env_file:
+      - "./${ENV_FILE:-deploy/s1.env}"
+      - "./deploy/account.env"
+    environment: {NODE_SEQ: "2", ADVERTISE_ADDR: "account-2"}
+    ports: ["9162:9100"]
+
   # ------------------------- Lobby（分片独占，×3）-------------------------
   lobby-1:
     <<: *lobby

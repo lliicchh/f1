@@ -27,7 +27,7 @@ func (s *Shard) handleCreate(m *bus.Msg) {
 		return
 	}
 	if _, ok := s.rooms[id]; ok {
-		// 幂等：重复创建同一房间直接返回成功。
+		// 重复创建同一个房间直接返回成功
 		_ = m.Respond(&pb.CreateRoomResp{RoomId: id})
 		return
 	}
@@ -125,9 +125,7 @@ func (s *Shard) handleStart(m *bus.Msg) {
 	s.rs.broadcastRoom(r, protocol.PushRoomEvent, r.Snapshot(), m.Env.GetTraceId())
 }
 
-// handleOp 处理战斗内操作。
-//
-// 这些是 L3 临时数据：不刷盘，丢了由下一帧覆盖，因此走 Core NATS 即可（§5.2 / §6.2）。
+// handleOp 处理战斗内操作。这些是临时数据，丢了下一帧就覆盖，走 Core NATS 就行
 func (s *Shard) handleOp(m *bus.Msg) {
 	var req pb.RoomOpReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -170,11 +168,11 @@ func (s *Shard) handleOp(m *bus.Msg) {
 	}
 }
 
-// 战斗操作码。
+// 战斗操作码
 const (
 	OpScore  uint32 = 1
 	OpFinish uint32 = 2
-	// OpChat 由 Chat 服务转发进来，由房间分片按 gateID 聚合后广播（§9.3）。
+	// OpChat Chat 转进来的，由房间分片聚合后广播
 	OpChat uint32 = 3
 )
 
@@ -192,7 +190,7 @@ func (s *Shard) handleInfo(m *bus.Msg) {
 	_ = m.Respond(r.Snapshot())
 }
 
-// settle 结算战斗：广播结果，并把发奖走 JetStream 投给每位成员的 Lobby 分片。
+// settle 结算战斗：广播结果，再把发奖投给每位成员的 Lobby 分片
 func (s *Shard) settle(r *Room) {
 	if r.settled || r.State == protocol.RoomStateSettling {
 		return
@@ -207,7 +205,7 @@ func (s *Shard) settle(r *Room) {
 
 	s.rs.broadcastRoom(r, protocol.PushBattleResult, res, "")
 
-	// 发奖属于资产操作，必须必达 —— 走 job.battle.settle（§5.2）。
-	// 一场战斗给每位成员投一条，由 Lobby 的 job 中转层转发给各自 owner 分片。
+	// 发奖是资产操作，得必达，走 job.battle.settle。每位成员一条，
+	// 由 Lobby 的中转层转给各自的 owner
 	s.rs.publishSettle(r, res)
 }

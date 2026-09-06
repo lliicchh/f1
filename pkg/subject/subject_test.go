@@ -2,7 +2,7 @@ package subject
 
 import "testing"
 
-// §5.1 的命名规范。
+// 命名规范
 func TestSubjectFormats(t *testing.T) {
 	cases := []struct{ got, want string }{
 		{LobbyReq(7, "login"), "req.lobby.7.login"},
@@ -24,7 +24,7 @@ func TestSubjectFormats(t *testing.T) {
 	}
 }
 
-// nodeID 会作为 subject 的一段，不能含点号，否则会被 NATS 当成多级。
+// nodeID 会作为 subject 的一段，不能含点号，否则会被 NATS 当成多级
 func TestNodeIDIsSingleToken(t *testing.T) {
 	subj := CtlHandoff("s1-lobby-1")
 	n := 0
@@ -58,7 +58,7 @@ func TestParseMatchReq(t *testing.T) {
 	}
 }
 
-// 指标打标只取前两段，避免 label 基数随分片号/uid 爆炸。
+// 指标打标只取前两段，避免 label 基数随分片号/uid 爆炸
 func TestPrefixBoundsCardinality(t *testing.T) {
 	cases := map[string]string{
 		"req.lobby.7.login":       "req.lobby",
@@ -76,7 +76,7 @@ func TestPrefixBoundsCardinality(t *testing.T) {
 	}
 }
 
-// §5.2：必达任务必须挂在 job. 前缀下，才能被 JetStream 的 stream 捕获。
+// 必达任务必须挂在 job. 前缀下，才能被 JetStream 的 stream 捕获
 func TestJobSubjectsUnderJobWildcard(t *testing.T) {
 	for _, s := range []string{JobTransfer("tx1"), JobMailSend, JobBattleSettle} {
 		if len(s) < 4 || s[:4] != "job." {

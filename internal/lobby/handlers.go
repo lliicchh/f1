@@ -35,7 +35,7 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 	now := time.Now()
 	conf := s.lob.conf.Get()
 
-	// 自我排除期内禁止登录。这是合规硬要求，优先于一切业务逻辑。
+	// 自我排除期内不许登录，这条优先于一切业务逻辑
 	if blocked, until := rg.LoginBlocked(p.RG, now); blocked {
 		metrics.RGBlocked.WithLabelValues("self_excluded").Inc()
 		_ = m.RespondErr(protocol.ErrSelfExcluded, "账号处于自我排除期，至 %s",
@@ -46,8 +46,7 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 	reconnect := p.Online || !p.OfflineAt.IsZero()
 
 	if p.Online && p.ConnID != req.GetConnId() {
-		// 顶号：旧连接所在的 Lobby 分片（就是这里）保存并卸载旧上下文（§9.2）。
-		// KICK 由网关侧发出，它在替换 session 时拿到了旧 gateID。
+		// 顶号了，把旧连接的上下文保存下来。KICK 由网关发，它换 session 时拿到了旧 gateID
 		logx.Info("玩家被顶号，卸载旧连接上下文",
 			"uid", p.UID, "old_gate", p.GateID, "old_conn", p.ConnID,
 			"new_gate", req.GetGateId(), "new_conn", req.GetConnId())
@@ -61,15 +60,15 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 	p.Base.LastLogin = now.UnixMilli()
 	s.mark(p.UID, store.ModBase)
 
-	// 会话计时从登录开始，供责任游戏的时长限制使用。
+	// 会话计时从登录开始，责任游戏的时长限制要用
 	rg.StartSession(p.RG, now)
 	rg.Rollover(p.RG, now, conf.RG)
 	s.mark(p.UID, store.ModRG)
 
-	// 离线期间投递到「待领取队列」的邮件在这里消费（§6.5）。
+	// 离线期间攒下的邮件在这里收
 	s.drainPendingMail(p.UID)
 
-	// 维护公会成员索引，供 Chat 做公会广播时查路由表（§9.3）。
+	// 更新公会成员索引，公会广播要靠它查路由表
 	if gid := p.Base.GetGuildId(); gid != 0 {
 		s.lob.indexGuildMember(gid, p.UID)
 	}
@@ -82,8 +81,7 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 		Quest:     p.Quest,
 		Reconnect: reconnect,
 	}
-	// 未结算的回合必须随登录返回：玩家在免费旋转中途断线，
-	// 重连后要能接着打完（评审 P1-1，GLI-19 对 incomplete round 的要求）。
+	// 未结算的回合要随登录带回去，玩家在免费旋转中途断线得能接着打完
 	if p.Round != nil {
 		resp.OpenRound = p.Round
 		metrics.RoundRecovered.Inc()
@@ -98,7 +96,7 @@ func (s *Shard) handleLogout(p *Player, m *bus.Msg) {
 	var req pb.LogoutReq
 	_ = bus.Unpack(m.Env, &req)
 
-	// 顶号场景下旧连接的 logout 会迟到，不能把新连接踢下线。
+	// 顶号后旧连接的 logout 会迟到，别把新连接踢了
 	if req.GetConnId() != 0 && p.ConnID != req.GetConnId() {
 		_ = m.Respond(&pb.Ack{Ok: false})
 		return
@@ -111,7 +109,7 @@ func (s *Shard) handleLogout(p *Player, m *bus.Msg) {
 
 	s.lob.PublishPlayerEvent(p.UID, "logout", p.Profile(), m.Env.GetTraceId())
 
-	// 下线不立刻卸载：保留 5~10 分钟供断线重连、离线结算、好友查看（§10.1）。
+	// 下线不立刻卸载，留几分钟给断线重连、离线结算和好友查看
 	_ = m.Respond(&pb.Ack{Ok: true})
 }
 
@@ -137,7 +135,7 @@ func (s *Shard) handleAddCurrency(p *Player, m *bus.Msg) {
 	}
 	s.mark(p.UID, store.ModBase)
 
-	// 每一笔货币变动都要有流水，否则事后无法解释余额是怎么来的（评审 P1-2）。
+	// 每笔货币变动都要有流水，不然事后解释不清余额是怎么来的
 	if req.GetDelta() != 0 {
 		s.appendLedger(p, s.entry(p.UID, ledger.TypeGrant, req.GetCurrency(),
 			req.GetDelta(), balance).WithRef(req.GetReason()).
@@ -160,7 +158,7 @@ func (s *Shard) handleAddItem(p *Player, m *bus.Msg) {
 
 	id, err := s.lob.node.NextID()
 	if err != nil {
-		// 时钟回拨等导致发不出号：绝不能用随机数兜底，直接失败（§3.6）。
+		// 发不出号（比如时钟回拨）就直接失败，不能拿随机数顶
 		_ = m.RespondErr(protocol.ErrInternal, "ID 生成失败: %v", err)
 		return
 	}
@@ -173,7 +171,7 @@ func (s *Shard) handleAddItem(p *Player, m *bus.Msg) {
 	}
 	s.mark(p.UID, store.ModBag)
 
-	// 道具是资产，发放要留痕。数量记在 ref 里（流水的 amount 字段留给货币）。
+	// 道具也是资产，发放要留痕。数量写在 ref 里，amount 留给货币
 	s.appendItemLedger(p, ledger.TypeGrant, req.GetTplId(), req.GetCount(), req.GetReason())
 	_ = m.Respond(&pb.AddItemResp{Item: it})
 }
@@ -245,7 +243,7 @@ func (s *Shard) handleQuestProgress(p *Player, m *bus.Msg) {
 	_ = m.Respond(&pb.QuestResp{Quest: q})
 }
 
-// QuestTarget 返回任务目标值。真实项目应查配置表。
+// QuestTarget 返回任务目标值。真实项目应查配置表
 func QuestTarget(id uint32) int64 { return int64(10 + id%10) }
 
 // ---------------------------------------------------------------------------
@@ -272,8 +270,8 @@ func (s *Shard) handleAddFriend(p *Player, m *bus.Msg) {
 		return
 	}
 
-	// 对方可能在别的分片、甚至不在线：这里只加自己这一侧，
-	// 对方那一侧走 job 中转层由其 owner 分片处理，绝不直接操作对方内存（§8）。
+	// 对方可能在别的分片甚至不在线，这里只加自己这侧，
+	// 对方那侧走 job 交给它的 owner 处理，不能直接动别人内存
 	p.Social.Friends = append(p.Social.Friends, target)
 	s.mark(p.UID, store.ModSocial)
 
@@ -281,10 +279,8 @@ func (s *Shard) handleAddFriend(p *Player, m *bus.Msg) {
 	_ = m.Respond(&pb.Ack{Ok: true})
 }
 
-// handleGetProfile 读只读摘要。
-//
-// 不唤醒目标玩家对象、不经过其 owner，直接读 Redis（§6.5）。
-// 这是纯读操作，因此可以在独立 goroutine 完成并直接回包，不占用 Actor。
+// handleGetProfile 读只读摘要，直接查 Redis，不唤醒目标玩家也不经过它的 owner。
+// 纯读，所以扔到独立 goroutine 里回包，不占 Actor
 func (s *Shard) handleGetProfile(m *bus.Msg) {
 	var req pb.GetProfileReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -314,7 +310,7 @@ func (s *Shard) handleGetMail(p *Player, m *bus.Msg) {
 	_ = m.Respond(&pb.GetMailResp{Mail: p.Mail})
 }
 
-// handleClaimMail 领取附件。附件是资产，走 L0 写穿 + 订单幂等（§6.2）。
+// handleClaimMail 领附件。附件是资产，走 L0 加订单幂等
 func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 	var req pb.ClaimMailReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -334,7 +330,7 @@ func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 
 	conf := s.lob.conf.Get()
 
-	// 在副本上结算，落盘成功后才替换内存。
+	// 在副本上算，落盘成功了才换进内存
 	bagCopy := proto.Clone(p.Bag).(*pb.PlayerBag)
 	mailCopy := proto.Clone(p.Mail).(*pb.PlayerMail)
 	tmp := &Player{UID: p.UID, Bag: bagCopy, Base: p.Base}
@@ -401,14 +397,14 @@ func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 			_ = m.Respond(out)
 			return
 		}
-		// 落盘成功，替换内存。
+		// 落盘成功，换进内存
 		p.Bag = bagCopy
 		p.Mail = mailCopy
 		_ = m.Respond(resp)
 	})
 }
 
-// handleApplyMail 应用 job 投递来的邮件（可能来自其他分片或系统）。
+// handleApplyMail 处理 job 投来的邮件，可能来自别的分片或系统
 func (s *Shard) handleApplyMail(p *Player, m *bus.Msg) {
 	var job pb.MailSendJob
 	if err := bus.Unpack(m.Env, &job); err != nil {
@@ -455,7 +451,7 @@ func (s *Shard) handleApplyMail(p *Player, m *bus.Msg) {
 	})
 }
 
-// drainPendingMail 消费离线期间写入待领取队列的邮件（§6.5）。
+// drainPendingMail 收掉离线期间攒在队列里的邮件
 func (s *Shard) drainPendingMail(uid uint64) {
 	key := s.lob.node.Keys.MailPending(uid)
 	rdb := s.lob.node.Redis
@@ -498,14 +494,10 @@ func (s *Shard) drainPendingMail(uid uint64) {
 // L0 写穿：充值
 // ---------------------------------------------------------------------------
 
-// handlePurchase 处理充值。
+// handlePurchase 处理充值
 //
-// 评审 P0-2 的修复。原来的实现有两个洞：
-//   - 未知商品按客户端给的 amount 发钱
-//   - 完全没有支付校验
-//
-// 现在：商品必须在配置表里，金额只取配置值，且必须通过渠道回执验签。
-// 幂等（订单号）保护的是「重复」，验签保护的是「伪造」，两者缺一不可。
+// 商品必须在配置表里，到账数量只取配置值，还得过渠道回执验签。
+// 订单号防重复，验签防伪造，两个都得有
 func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 	var req pb.PurchaseReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -520,7 +512,7 @@ func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 	conf := s.lob.conf.Get()
 	product, ok := conf.Product(req.GetProduct())
 	if !ok {
-		// 未知商品一律拒绝。以前这里会按客户端给的金额发钱。
+		// 未知商品一律拒
 		_ = m.RespondErr(protocol.ErrProductUnknown, "未知商品 %d", req.GetProduct())
 		return
 	}
@@ -546,7 +538,7 @@ func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 		return
 	}
 
-	// 到账数量只取配置值，客户端说了不算。
+	// 到账数量看配置，客户端说了不算
 	currency, amount := product.Currency, product.Amount
 
 	baseCopy := proto.Clone(p.Base).(*pb.PlayerBase)
@@ -605,8 +597,7 @@ func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 // 战斗结算
 // ---------------------------------------------------------------------------
 
-// handleBattleSettle 写回战斗奖励。以 roomID 作为幂等键，
-// 房间重发结算不会重复发奖。
+// handleBattleSettle 写回战斗奖励，用 roomID 做幂等键，房间重发不会重复发
 func (s *Shard) handleBattleSettle(p *Player, m *bus.Msg) {
 	var res pb.BattleResult
 	if err := bus.Unpack(m.Env, &res); err != nil {
@@ -687,10 +678,10 @@ func (s *Shard) handleBattleSettle(p *Player, m *bus.Msg) {
 }
 
 // ---------------------------------------------------------------------------
-// 跨分片转移（§8）
+// 跨分片转移
 // ---------------------------------------------------------------------------
 
-// handleTransfer 是发起方：扣道具（内存）→ 写穿 tx 记录 → 投递 job。
+// handleTransfer 发起方：内存里扣掉、写穿 tx 记录、投 job
 func (s *Shard) handleTransfer(p *Player, m *bus.Msg) {
 	var req pb.TransferJob
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -702,8 +693,7 @@ func (s *Shard) handleTransfer(p *Player, m *bus.Msg) {
 		return
 	}
 
-	// —— 扣除（内存）——
-	// 「发起方先扣除并写穿，确保资源不会凭空增加」。
+	// 先扣。先扣再写穿，资源就不会凭空多出来
 	bagCopy := proto.Clone(p.Bag).(*pb.PlayerBag)
 	baseCopy := proto.Clone(p.Base).(*pb.PlayerBase)
 	tmp := &Player{UID: p.UID, Bag: bagCopy, Base: baseCopy}
@@ -768,8 +758,8 @@ func (s *Shard) handleTransfer(p *Player, m *bus.Msg) {
 		beginErr := s.lob.txm.Begin(ctx, epoch, rec, kv)
 		var pubErr error
 		if beginErr == nil {
-			// 写穿成功后才投递 job。反过来会出现「job 已到、扣减未落盘」，
-			// 崩溃后资源凭空增加。
+			// 写穿成功了才投 job。反过来会出现 job 到了扣减却没落盘，
+			// 一崩溃资源就凭空多了
 			pubErr = s.lob.publishTransfer(ctx, rec, traceID)
 		}
 
@@ -789,19 +779,19 @@ func (s *Shard) handleTransfer(p *Player, m *bus.Msg) {
 					s.svc.Claimer().Fence(sh)
 					return
 				}
-				// 写穿失败：内存未改动过（我们改的是副本），天然回滚。
+				// 写穿失败也没事，改的一直是副本，内存没动过
 				_ = m.RespondErr(protocol.ErrInternal, "发起转移失败: %v", beginErr)
 				return
 			}
 
-			// 扣减已落盘，替换内存。
+			// 扣减落盘了，换进内存
 			if ok {
 				pl.Bag = bagCopy
 				pl.Base = baseCopy
 			}
 
 			if pubErr != nil {
-				// 记录已是 PENDING，补偿扫描器会重投，因此这里回成功是安全的。
+				// 记录已经是 PENDING 了，扫描器会重投，这里回成功是安全的
 				logx.Trace(traceID).Warn("投递转移任务失败，交由补偿扫描器重投",
 					"txid", txid, "err", pubErr)
 			}
@@ -810,7 +800,7 @@ func (s *Shard) handleTransfer(p *Player, m *bus.Msg) {
 	}()
 }
 
-// handleApplyTransfer 是接收方：SET tx:{txid}:done NX（幂等）→ 加道具（内存）→ 标记 COMPLETED。
+// handleApplyTransfer 接收方：先 SET done NX 去重，再加道具，最后标记完成
 func (s *Shard) handleApplyTransfer(p *Player, m *bus.Msg) {
 	var job pb.TransferJob
 	if err := bus.Unpack(m.Env, &job); err != nil {
@@ -846,7 +836,7 @@ func (s *Shard) handleApplyTransfer(p *Player, m *bus.Msg) {
 			return
 		}
 		if _, ok := tmp.AddItem(id, att.GetTplId(), att.GetCount(), now, s.lob.conf.Get().Stackable(att.GetTplId())); !ok {
-			// 背包满：不能默默丢弃资产，转投待领取邮件队列。
+			// 背包满了不能把东西扔了，转成待领取邮件
 			s.lob.fallbackToMailbox(p.UID, &job, m.Env.GetTraceId())
 			_ = m.Respond(&pb.Ack{Ok: true})
 			return
@@ -877,7 +867,7 @@ func (s *Shard) handleApplyTransfer(p *Player, m *bus.Msg) {
 	})
 }
 
-// claimAsync 执行接收方的幂等入账，完成后在 Actor 内回调。
+// claimAsync 做接收方的幂等入账，完成后回到 Actor 里回调
 func (s *Shard) claimAsync(p *Player, rec *xtx.Record, kv map[string][]byte, m *bus.Msg, apply func(applied bool)) {
 	p.busy = true
 	uid := p.UID
@@ -892,8 +882,8 @@ func (s *Shard) claimAsync(p *Player, rec *xtx.Record, kv map[string][]byte, m *
 
 		applied, err := s.lob.txm.Claim(ctx, epoch, rec, kv)
 		if err == nil {
-			// 标记 COMPLETED 并移出 PENDING 索引。失败也无妨：
-			// done 标记已在，重投会被幂等拦下，扫描器最多多扫一次。
+			// 标记完成并摘出 PENDING 索引。失败也不要紧，
+			// done 标记已经在了，重投会被幂等拦下
 			if cerr := s.lob.txm.Complete(ctx, rec); cerr != nil {
 				logx.Trace(traceID).Warn("标记转移完成失败", "txid", rec.TxID, "err", cerr)
 			}
@@ -915,7 +905,7 @@ func (s *Shard) claimAsync(p *Player, rec *xtx.Record, kv map[string][]byte, m *
 					s.svc.Claimer().Fence(sh)
 					return
 				}
-				// 回错误让 job 重投。接收方幂等，重复投递安全。
+				// 回错误让 job 重投，接收方幂等，重复投没问题
 				_ = m.RespondErr(protocol.ErrInternal, "入账失败: %v", err)
 				return
 			}
@@ -927,7 +917,6 @@ func (s *Shard) claimAsync(p *Player, rec *xtx.Record, kv map[string][]byte, m *
 	}()
 }
 
-// pushOfflineOrOnline 决定推送方式。
 func (s *Shard) online(p *Player) bool { return p.Online && p.GateID != "" }
 
 var _ = subject.Broadcast

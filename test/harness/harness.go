@@ -1,9 +1,7 @@
-// Package harness 为集成测试提供进程内的 etcd / NATS / Redis。
+// Package harness 给集成测试提供进程内的 etcd、NATS 和 Redis
 //
-// 设计文档把 P1（分片认领）与 P2（Actor + 刷盘 + epoch fencing）列为地基，
-// 「出问题最贵、事后最难补，建议投入最多评审和测试」（§17）。
-// 这些行为只有在真实的 etcd 事务与 Redis Lua 上才检验得出来，
-// 因此这里把三个依赖都嵌进测试进程，而不是用假实现糊弄过去。
+// 分片认领和 epoch fencing 只有在真的 etcd 事务和 Redis Lua 上才验得出来，
+// 所以把三个依赖都嵌进测试进程，不用假实现
 package harness
 
 import (
@@ -34,7 +32,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// Env 是一套进程内基础设施。
+// Env 一套进程内基础设施
 type Env struct {
 	EtcdEndpoint string
 	NatsURL      string
@@ -45,7 +43,7 @@ type Env struct {
 	redis *miniredis.Miniredis
 }
 
-// Start 启动 etcd / NATS(JetStream) / Redis。
+// Start 启动 etcd / NATS(JetStream) / Redis
 func Start(t *testing.T) *Env {
 	t.Helper()
 
@@ -53,7 +51,7 @@ func Start(t *testing.T) *Env {
 	e.redis = miniredis.RunT(t)
 	e.RedisAddr = e.redis.Addr()
 
-	// —— NATS（开 JetStream，job.* 需要）——
+	// NATS，开 JetStream，job.* 需要
 	ns, err := natsserver.NewServer(&natsserver.Options{
 		Host:      "127.0.0.1",
 		Port:      freePort(t),
@@ -72,7 +70,7 @@ func Start(t *testing.T) *Env {
 	e.nats = ns
 	e.NatsURL = ns.ClientURL()
 
-	// —— etcd ——
+	// etcd
 	cfg := embed.NewConfig()
 	cfg.Dir = t.TempDir()
 	cfg.LogLevel = "error"
@@ -100,7 +98,6 @@ func Start(t *testing.T) *Env {
 	return e
 }
 
-// Stop 关闭全部依赖。
 func (e *Env) Stop() {
 	if e.etcd != nil {
 		e.etcd.Close()
@@ -112,7 +109,7 @@ func (e *Env) Stop() {
 	}
 }
 
-// Config 生成一份指向本套依赖的配置。
+// Config 生成一份指向本套依赖的配置
 func (e *Env) Config(t *testing.T, svcName string, nodeSeq int, tweak func(*config.Config)) (*config.Config, *ident.Identity) {
 	t.Helper()
 
@@ -125,13 +122,18 @@ func (e *Env) Config(t *testing.T, svcName string, nodeSeq int, tweak func(*conf
 	t.Setenv("METRICS_ADDR", "")
 	t.Setenv("REDIS_REQUIRE_NOEVICTION", "false") // miniredis 不支持 CONFIG GET
 
-	// 安全相关的密钥。测试里显式配齐，正是为了让测试跑在与生产同一套鉴权规则下 ——
-	// 如果测试靠「关掉鉴权」才能通过，那鉴权就等于没测。
+	// 安全相关的密钥。测试里显式配齐，让测试跑在与生产同一套鉴权规则下。
+	// 如果测试靠「关掉鉴权」才能通过，那鉴权就等于没测
 	t.Setenv("INTERNAL_SECRET", TestInternalSecret)
 	t.Setenv("LOGIN_SECRET", TestLoginSecret)
 	t.Setenv("PAYMENT_SECRET", TestPaymentSecret)
 	t.Setenv("ALLOW_DEV_AUTH", "false")
 	t.Setenv("PAYMENT_SANDBOX", "false")
+
+	// 渠道沙箱是测试里唯一可用的 provider，它照样会拒绝坏凭证、
+	// 照样走熔断，所以打开它不影响这些规则被验到
+	t.Setenv("IDP_SANDBOX", "true")
+	t.Setenv("IDP_TIMEOUT", "2s")
 
 	cfg, id, err := config.Load(svcName)
 	if err != nil {
@@ -143,10 +145,10 @@ func (e *Env) Config(t *testing.T, svcName string, nodeSeq int, tweak func(*conf
 	return cfg, id
 }
 
-// Node 构造一个可直接使用的 node.Node（跳过 metrics 服务，其余与生产一致）。
+// Node 构造一个能直接用的 node.Node，只跳过 metrics 服务
 //
-// 这里会真的做一次 §3.4 的 nodeID 抢占：分片认领算「公平份额」时要靠
-// etcd 上的存活实例数（nodeid.CountLive），不注册就算不出来。
+// 这里会真的做一次 nodeID 抢占：分片认领算「公平份额」时要靠
+// etcd 上的存活实例数（nodeid.CountLive），不注册就算不出来
 func (e *Env) Node(t *testing.T, svcName, kind string, nodeSeq int, tweak func(*config.Config)) *node.Node {
 	t.Helper()
 
@@ -177,7 +179,7 @@ func (e *Env) Node(t *testing.T, svcName, kind string, nodeSeq int, tweak func(*
 
 	reg, err := nodeid.Claim(context.Background(), cli, cfg, id, nil)
 	if err != nil {
-		t.Fatalf("nodeID 自检失败: %v", err)
+		t.Fatalf("nodeID 检查失败: %v", err)
 	}
 	t.Cleanup(func() {
 		rctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -196,17 +198,17 @@ func (e *Env) Node(t *testing.T, svcName, kind string, nodeSeq int, tweak func(*
 	}
 }
 
-// 测试用密钥。生产由部署下发，且网关不应拿到 INTERNAL_SECRET。
+// 测试用密钥。生产由部署下发，且网关不应拿到 INTERNAL_SECRET
 const (
 	TestInternalSecret = "test-internal-secret-do-not-use-in-prod"
 	TestLoginSecret    = "test-login-secret-do-not-use-in-prod"
 	TestPaymentSecret  = "test-payment-secret-do-not-use-in-prod"
 )
 
-// Redis 返回底层 miniredis，用于制造故障。
+// Redis 返回底层 miniredis，用于制造故障
 func (e *Env) Redis() *miniredis.Miniredis { return e.redis }
 
-// Token 为某个 uid 签发一张登录票据。
+// Token 为某个 uid 签发一张登录票据
 func Token(t *testing.T, uid uint64) string {
 	t.Helper()
 	v := authn.NewVerifier(TestLoginSecret, false)
@@ -217,9 +219,9 @@ func Token(t *testing.T, uid uint64) string {
 	return tok
 }
 
-// InternalCall 以「服务端内部」的身份发起一条带签名的命令。
+// InternalCall 以「服务端内部」的身份发起一条带签名的命令
 //
-// 测试里凡是要发内部 / GM 命令，都必须走这里 —— 与生产路径完全一致。
+// 测试里凡是要发内部 / GM 命令，都必须走这里，与生产路径完全一致
 func InternalCall(ctx context.Context, t *testing.T, n *node.Node, subj string,
 	cmd protocol.Cmd, uid uint64, operator string, body, out proto.Message) error {
 	t.Helper()
@@ -269,11 +271,11 @@ func mustURL(t *testing.T, raw string) url.URL {
 }
 
 func init() {
-	// 嵌入式 etcd 会往 stderr 打大量日志，测试里静音。
+	// 嵌入式 etcd 会往 stderr 打大量日志，测试里静音
 	_ = os.Setenv("ETCD_UNSUPPORTED_ARCH", "")
 }
 
-// Eventually 轮询等待条件成立。
+// Eventually 轮询等待条件成立
 func Eventually(t *testing.T, timeout time.Duration, desc string, cond func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)

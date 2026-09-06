@@ -68,8 +68,8 @@ func TestFlusherWritesBatch(t *testing.T) {
 	}
 }
 
-// §7.2：刷盘被 fencing 拒绝时，结果必须带 Fenced 标记，
-// 上层据此丢弃内存并停止服务。
+// 刷盘被 fencing 拒绝时，结果必须带 Fenced 标记，
+// 上层据此丢弃内存并停止服务
 func TestFlusherReportsFenced(t *testing.T) {
 	fl, f, _, _ := newFlushEnv(t, 16, 2)
 	ctx := context.Background()
@@ -93,13 +93,13 @@ func TestFlusherReportsFenced(t *testing.T) {
 	}
 }
 
-// §6.3：flushCh 满时走 default 重新标脏并告警，绝不阻塞 Actor。
+// flushCh 满时走 default 重新标脏并告警，绝不阻塞 Actor
 func TestSubmitNeverBlocksWhenFull(t *testing.T) {
-	// 容量 1、0 个 worker：提交第二批必然满。
+	// 容量 1、0 个 worker：提交第二批必然满
 	f := NewFencer(redis.NewClient(&redis.Options{Addr: miniredis.RunT(t).Addr()}),
 		NewKeys(TagUID, 1024, "lobby"), "lobby")
 	fl := NewFlusher(f, "lobby", 1, 1, 128, nil)
-	// 故意不 Start：没有 worker 消费，队列填满后必须立刻返回 ErrBacklog。
+	// 故意不 Start：没有 worker 消费，队列填满后必须立刻返回 ErrBacklog
 
 	mk := func(id uint64) *Batch {
 		return &Batch{Shard: 1, Epoch: 1, Level: L1, Entities: []*Entity{{
@@ -118,11 +118,11 @@ func TestSubmitNeverBlocksWhenFull(t *testing.T) {
 			t.Fatalf("队列满应返回 ErrBacklog，实际 %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("Submit 阻塞了 —— 绝不允许，会让故障扩散成全服卡死")
+		t.Fatal("Submit 阻塞了，会让故障扩散成全服卡死")
 	}
 }
 
-// Redis 挂掉时刷盘失败，失败实体必须回报以便重新标脏，绝不丢弃。
+// Redis 挂掉时刷盘失败，失败实体必须回报以便重新标脏，绝不丢弃
 func TestFlushFailureReportsFailedEntities(t *testing.T) {
 	fl, f, mr, sink := newFlushEnv(t, 16, 1)
 	ctx := context.Background()
@@ -147,14 +147,14 @@ func TestFlushFailureReportsFailedEntities(t *testing.T) {
 			t.Fatalf("失败实体必须被回报，实际 %+v", res)
 		}
 		if res.Fenced {
-			t.Fatal("Redis 故障不应被误判为 fencing —— 二者的处置完全相反")
+			t.Fatal("Redis 故障不应被误判为 fencing，二者的处置完全相反")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("刷盘结果未回报")
 	}
 }
 
-// 一批中部分实体失败时，成功的不应被重复回报为失败。
+// 一批中部分实体失败时，成功的不应被重复回报为失败
 func TestPartialBatchIsolatesFailures(t *testing.T) {
 	fl, f, _, _ := newFlushEnv(t, 16, 1)
 	ctx := context.Background()
@@ -179,7 +179,7 @@ func TestPartialBatchIsolatesFailures(t *testing.T) {
 	}
 }
 
-// profile 摘要与玩家模块在同一批里写出（§6.5）。
+// profile 摘要与玩家模块在同一批里写出
 func TestFlusherWritesProfileHash(t *testing.T) {
 	fl, f, _, _ := newFlushEnv(t, 16, 1)
 	ctx := context.Background()

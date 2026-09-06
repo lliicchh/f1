@@ -14,10 +14,10 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-// §10.2：新实例上线后主动发起交接，把分片从老实例手里接过来。
+// 新实例上线后主动发起交接，把分片从老实例手里接过来
 //
-// 靠 lease 自然过期有 8~10s 不可用窗口，主动交接可压到百毫秒 ——
-// 这个测试验证的是「交接确实发生了」以及「交接后数据没丢」。
+// 等 lease 过期要 8~10s 不可用，主动交接能压到百毫秒。
+// 这里验两件事：交接真的发生了，交接后数据没丢
 func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 	env := harness.Start(t)
 
@@ -26,7 +26,7 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 		return len(svc1.OwnedShards()) == testShards
 	})
 
-	// 在扩容前写入数据，交接后必须还在。
+	// 在扩容前写入数据，交接后必须还在
 	const uid = uint64(5005)
 	if err := lobbyCall(t, n1, uid, protocol.CmdLogin,
 		&pb.LoginReq{Uid: uid, Token: harness.Token(t, uid), GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
@@ -34,7 +34,7 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 	}
 	grant(t, n1, uid, uint32(protocol.CurrencyGold), 777)
 
-	// 第二个实例上线。
+	// 第二个实例上线
 	n2 := env.Node(t, "lobby", "lobby", 2, lobbyCfg)
 	svc2 := lobby.New()
 	ctx := context.Background()
@@ -49,13 +49,13 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 		svc2.Close(sctx)
 	})
 
-	// 两边应收敛到接近公平份额（32 / 2 = 16）。
+	// 两边应收敛到接近公平份额（32 / 2 = 16）
 	harness.Eventually(t, 40*time.Second, "分片再平衡收敛", func() bool {
 		a, b := len(svc1.OwnedShards()), len(svc2.OwnedShards())
 		return a+b == testShards && a > 0 && b > 0 && abs(a-b) <= 2
 	})
 
-	// 交接期间没有分片被两边同时持有。
+	// 交接期间没有分片被两边同时持有
 	owned := map[uint32]bool{}
 	for _, s := range svc1.OwnedShards() {
 		owned[s] = true
@@ -66,9 +66,9 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 		}
 	}
 
-	// 数据必须完好：交接前旧 owner 做过全量刷盘，新 owner 从 Redis 加载。
+	// 数据必须完好：交接前旧 owner 做过全量刷盘，新 owner 从 Redis 加载
 	if bal := grant(t, n1, uid, uint32(protocol.CurrencyGold), 0); bal != 777 {
-		t.Fatalf("交接后余额 = %d，期望 777 —— 数据在交接中丢了", bal)
+		t.Fatalf("交接后余额 = %d，期望 777，数据在交接中丢了", bal)
 	}
 }
 
@@ -79,13 +79,12 @@ func abs(n int) int {
 	return n
 }
 
-// §10.3：下线顺序不可颠倒 —— 停止接新请求 → Drain → 全量刷盘 → 注销。
-// 这里验证最终结果：进程退出后，内存里的改动一条不少地留在 Redis。
+// 下线顺序不能颠倒。这里只验最终结果：进程退出后内存里的改动一条不少地在 Redis 里
 func TestGracefulShutdownPersistsData(t *testing.T) {
 	env := harness.Start(t)
 	n := env.Node(t, "lobby", "lobby", 1, func(c *config.Config) {
 		lobbyCfg(c)
-		// 把 L1 间隔拉长，确保数据只能靠「下线时的全量刷盘」落地。
+		// 把 L1 间隔拉长，确保数据只能靠「下线时的全量刷盘」落地
 		c.FlushL1Interval = time.Hour
 		c.FlushL2Interval = time.Hour
 	})
@@ -104,7 +103,7 @@ func TestGracefulShutdownPersistsData(t *testing.T) {
 	}
 	grant(t, n, uid, uint32(protocol.CurrencyGold), 1234)
 
-	// 定时刷盘被关掉了，此刻 Redis 里应该还没有这笔钱。
+	// 定时刷盘被关掉了，此刻 Redis 里应该还没有这笔钱
 	if blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModBase)).Bytes(); err == nil {
 		base := &pb.PlayerBase{}
 		_ = proto.Unmarshal(blob, base)
@@ -113,7 +112,7 @@ func TestGracefulShutdownPersistsData(t *testing.T) {
 		}
 	}
 
-	// 优雅下线。
+	// 优雅下线
 	sctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	svc.StopAccepting(sctx)
@@ -134,7 +133,7 @@ func TestGracefulShutdownPersistsData(t *testing.T) {
 		t.Fatalf("下线刷盘丢数据：余额 = %d，期望 1234", got)
 	}
 
-	// 分片也应被释放，别人可以立刻接管。
+	// 分片也应被释放，别人可以立刻接管
 	if len(svc.OwnedShards()) != 0 {
 		t.Fatalf("下线后不应仍持有分片，实际 %d 个", len(svc.OwnedShards()))
 	}

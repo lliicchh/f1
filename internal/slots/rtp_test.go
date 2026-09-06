@@ -10,11 +10,11 @@ import (
 
 var rtpSpins = flag.Int("rtp.spins", 2_000_000, "RTP 蒙特卡洛的旋转次数")
 
-// Simulate 跑一轮蒙特卡洛，返回各部分 RTP。
+// Simulate 跑一轮蒙特卡洛，返回各部分 RTP
 //
 // 这是 slots 的核心回归手段：轴带或赔付表改错一个数字，
 // RTP 可能从 96% 跳到 130%（送钱）或 60%（玩家流失），
-// 这种错误必须在 CI 拦住，不能等上线后看报表。
+// 这种错误必须在 CI 拦住，不能等上线后看报表
 type rtpStat struct {
 	Spins     int
 	PaidSpins int64
@@ -89,10 +89,10 @@ func simulate(t testing.TB, m *gameconf.SlotMachine, spins int, bet int64) rtpSt
 	return st
 }
 
-// TestRTPMatchesConfig 是 RTP 回归：实测必须落在配置的理论值附近。
+// TestRTPMatchesConfig RTP 回归：实测必须落在配置的理论值附近
 //
 // 容差 ±0.5%（绝对）：200 万次旋转下，蒙特卡洛标准误远小于此，
-// 超出容差基本可以断定是数学模型被改动了，而不是随机波动。
+// 超出容差基本可以断定是数学模型被改动了，而不是随机波动
 func TestRTPMatchesConfig(t *testing.T) {
 	c := gameconf.Default()
 	m, ok := c.Machine("classic5")
@@ -118,8 +118,8 @@ func TestRTPMatchesConfig(t *testing.T) {
 	}
 }
 
-// TestRTPSanityBounds 是一道更粗的护栏：即便有人同时改了配置里的理论值，
-// RTP 也不该跑到明显不合理的区间。
+// TestRTPSanityBounds 一道更粗的护栏：即便有人同时改了配置里的理论值，
+// RTP 也不该跑到明显不合理的区间
 func TestRTPSanityBounds(t *testing.T) {
 	c := gameconf.Default()
 	for id, m := range c.Slots {

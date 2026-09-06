@@ -1,9 +1,7 @@
-// Package idgen 实现 §3.5 的雪花 ID 与 §3.6 的时钟回拨处理。
+// Package idgen 雪花 ID
 //
 //	1 符号 | 41 时间戳(ms) | 10 workerID | 12 序列号
 //	           69 年          1024 节点      4096/ms/节点
-//
-//	workerID 10 bit = svcType(3) | nodeSeq(7)
 package idgen
 
 import (
@@ -28,23 +26,21 @@ const (
 	workerShift = SeqBits                // 12
 	tsShift     = SeqBits + WorkerIDBits // 22
 
-	// SpinTolerance 小回拨容忍上限：NTP 微调，自旋等待追平（§3.6）。
+	// SpinTolerance 以内的回拨当成 NTP 微调，自旋等它追上来
 	SpinTolerance = 10 * time.Millisecond
 )
 
-// DefaultEpoch 雪花纪元起点：2024-01-01 00:00:00 UTC。
-// 41 bit 可表达约 69 年，即到 2093 年。纪元一经上线不可变更。
+// DefaultEpoch 纪元起点，41 bit 够用到 2093 年。上线后不能改
 var DefaultEpoch = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC).UnixMilli()
 
-// ErrClockBackwards 表示检测到大幅时钟回拨，已停止发号。
-//
-// 「大回拨绝不容忍继续发号，宁可该进程停止服务」（§3.6）。
+// ErrClockBackwards 表示时钟大幅回拨，已经停止发号。宁可这个进程不服务，
+// 也不能继续发可能重复的 ID
 var ErrClockBackwards = errors.New("idgen: 时钟大幅回拨，已停止发号")
 
-// ErrHalted 表示发号器处于停止状态，等待时钟修正。
+// ErrHalted 表示发号器停着呢，等时钟修正
 var ErrHalted = errors.New("idgen: 发号器已停止，等待时钟修正")
 
-// Generator 是单进程内的雪花发号器，并发安全。
+// Generator 进程内的发号器，并发安全
 type Generator struct {
 	mu       sync.Mutex
 	workerID uint64
@@ -53,10 +49,10 @@ type Generator struct {
 	seq      uint64
 	halted   bool
 
-	now func() int64 // 可注入，便于测试
+	now func() int64 // 可注入，方便测试
 }
 
-// New 构造发号器。workerID 必须来自 ident.Identity.WorkerID()。
+// New 构造发号器，workerID 来自 ident.Identity.WorkerID()
 func New(workerID uint32) (*Generator, error) {
 	if workerID > MaxWorkerID {
 		return nil, fmt.Errorf("idgen: workerID 越界 %d，必须在 [0,%d]", workerID, MaxWorkerID)
@@ -69,17 +65,12 @@ func New(workerID uint32) (*Generator, error) {
 	}, nil
 }
 
-// NewFromIdentity 是 New 的便捷封装。
 func NewFromIdentity(id *ident.Identity) (*Generator, error) { return New(id.WorkerID()) }
 
-// Next 生成下一个 ID。
+// Next 生成下一个 ID
 //
-// 时钟回拨处理（§3.6）：
-//   - 回拨 <= 10ms：NTP 微调，自旋等待追平
-//   - 回拨  > 10ms：停止发号 + 告警，绝不能继续
-//
-// 因为序号固定绑定容器、workerID 不会被其他进程复用，跨进程回拨问题不存在，
-// 这里只需处理单进程内的回拨。
+// 时钟回拨 10ms 以内当 NTP 微调，自旋等它追上来；超过就停止发号并告警。
+// workerID 绑容器不复用，所以跨进程回拨不用管，这里只处理单进程内的
 func (g *Generator) Next() (uint64, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -87,7 +78,7 @@ func (g *Generator) Next() (uint64, error) {
 	now := g.now()
 
 	if g.halted {
-		// 停止状态下，只有时钟追平到上次发号时刻之后才恢复。
+		// 停着的时候，得等时钟追过上次发号时刻才恢复
 		if now <= g.lastTS {
 			return 0, ErrHalted
 		}
@@ -99,14 +90,14 @@ func (g *Generator) Next() (uint64, error) {
 	if now < g.lastTS {
 		diff := g.lastTS - now
 		if diff <= SpinTolerance.Milliseconds() {
-			// 小回拨：自旋等待追平。
+			// 小回拨，自旋等它追上来
 			metrics.IDClockBackwards.WithLabelValues("minor").Inc()
 			for now < g.lastTS {
 				time.Sleep(time.Duration(g.lastTS-now) * time.Millisecond)
 				now = g.now()
 			}
 		} else {
-			// 大回拨：停止发号 + 告警。
+			// 大回拨，停止发号并告警
 			g.halted = true
 			metrics.IDClockBackwards.WithLabelValues("major").Inc()
 			metrics.IDHalted.Set(1)
@@ -120,7 +111,7 @@ func (g *Generator) Next() (uint64, error) {
 	if now == g.lastTS {
 		g.seq = (g.seq + 1) & MaxSeq
 		if g.seq == 0 {
-			// 同毫秒内 4096 个用尽，等待下一毫秒。
+			// 这一毫秒的 4096 个用完了，等下一毫秒
 			metrics.IDSeqOverflow.Inc()
 			now = g.waitNextMilli(now)
 		}
@@ -143,8 +134,8 @@ func (g *Generator) Next() (uint64, error) {
 	return id, nil
 }
 
-// MustNext 在发号失败时 panic。仅用于「宁可停服也不能发重复 ID」的路径，
-// 且调用方已确认无法降级（例如启动期自检）。业务路径请用 Next 并处理错误。
+// MustNext 失败就 panic，只给启动期检查那种没法降级的地方用。
+// 业务路径请用 Next 自己处理错误
 func (g *Generator) MustNext() uint64 {
 	id, err := g.Next()
 	if err != nil {
@@ -153,7 +144,7 @@ func (g *Generator) MustNext() uint64 {
 	return id
 }
 
-// NextN 批量生成 n 个 ID（开箱、扫荡等批量产出道具 ID，§15）。
+// NextN 一次生成 n 个，开箱扫荡这类批量产出用
 func (g *Generator) NextN(n int) ([]uint64, error) {
 	out := make([]uint64, 0, n)
 	for i := 0; i < n; i++ {
@@ -166,7 +157,7 @@ func (g *Generator) NextN(n int) ([]uint64, error) {
 	return out, nil
 }
 
-// Halted 报告是否因大回拨停止发号。
+// Halted 报告是不是因为大回拨停了
 func (g *Generator) Halted() bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -181,7 +172,7 @@ func (g *Generator) waitNextMilli(now int64) int64 {
 	return now
 }
 
-// Parts 是雪花 ID 的分解结果，用于排查问题。
+// Parts 拆开的雪花 ID，排查用
 type Parts struct {
 	Timestamp time.Time
 	WorkerID  uint32
@@ -190,7 +181,6 @@ type Parts struct {
 	NodeSeq   int
 }
 
-// Parse 分解一个雪花 ID。
 func Parse(id uint64) Parts {
 	seq := uint32(id & MaxSeq)
 	worker := uint32((id >> workerShift) & MaxWorkerID)

@@ -21,15 +21,14 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// Envelope 是所有 NATS 消息的统一信封（设计文档 §5.3）。
+// Envelope 是所有 NATS 消息的统一信封。
 //
-// 演进规则：只增字段不改 tag，废弃字段必须 reserved。
-// 滚动发版时新旧版本进程会同时读写同一批数据/消息。
+// 只增字段不改 tag，废弃的用 reserved。滚动发版时新旧进程会同时读写同一批消息。
 type Envelope struct {
 	state    protoimpl.MessageState `protogen:"open.v1"`
 	Cmd      uint32                 `protobuf:"varint,1,opt,name=cmd,proto3" json:"cmd,omitempty"`
 	Uid      uint64                 `protobuf:"varint,2,opt,name=uid,proto3" json:"uid,omitempty"`
-	TraceId  string                 `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`    // 全链路追踪，第一天就带上
+	TraceId  string                 `protobuf:"bytes,3,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`    // 全链路追踪
 	FromNode string                 `protobuf:"bytes,4,opt,name=from_node,json=fromNode,proto3" json:"from_node,omitempty"` // 发送方 nodeID
 	TsMs     int64                  `protobuf:"varint,5,opt,name=ts_ms,json=tsMs,proto3" json:"ts_ms,omitempty"`
 	Seq      uint32                 `protobuf:"varint,6,opt,name=seq,proto3" json:"seq,omitempty"` // 应答匹配
@@ -39,13 +38,11 @@ type Envelope struct {
 	ErrMsg  string `protobuf:"bytes,9,opt,name=err_msg,json=errMsg,proto3" json:"err_msg,omitempty"`
 	// 目标分片，便于日志与断言（发送方按 uid/roomID 计算后填入）。
 	Shard uint32 `protobuf:"varint,10,opt,name=shard,proto3" json:"shard,omitempty"`
-	// 内部命令签名（HMAC-SHA256 截断）。
+	// 内部命令签名，HMAC-SHA256 截断。
 	//
-	// Internal / GM 级命令必须携带；接收方用共享密钥校验。
-	// 网关不持有这把密钥，因此即使有人伪造出一条内部命令，也过不了校验。
-	Auth []byte `protobuf:"bytes,11,opt,name=auth,proto3" json:"auth,omitempty"`
-	// 签发 GM 命令的操作者，用于审计（谁补的单）。
-	Operator      string `protobuf:"bytes,12,opt,name=operator,proto3" json:"operator,omitempty"`
+	// Internal 和 GM 级命令必须带。网关没有这把密钥，伪造也过不了校验。
+	Auth          []byte `protobuf:"bytes,11,opt,name=auth,proto3" json:"auth,omitempty"`
+	Operator      string `protobuf:"bytes,12,opt,name=operator,proto3" json:"operator,omitempty"` // GM 命令的操作者
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -164,7 +161,6 @@ func (x *Envelope) GetOperator() string {
 	return ""
 }
 
-// 通用空体 / 通用确认
 type Empty struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields

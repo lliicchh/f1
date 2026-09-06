@@ -19,7 +19,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// Shard 是一个 Room 分片的内存状态。
+// Shard 一个 Room 分片的内存状态
 type Shard struct {
 	o   shard.Ownership
 	svc *shardsvc.Service
@@ -33,10 +33,9 @@ type Shard struct {
 	closed    bool
 }
 
-// modRoom 是房间快照的「模块」名，复用玩家那套脏标记与刷盘设施。
+// modRoom 借用玩家那套脏标记和刷盘设施，给房间快照当模块名
 const modRoom store.Module = "snapshot"
 
-// NewShard 构造房间分片。
 func NewShard(o shard.Ownership, svc *shardsvc.Service, rs *Service) *Shard {
 	return &Shard{
 		o:     o,
@@ -47,10 +46,9 @@ func NewShard(o shard.Ownership, svc *shardsvc.Service, rs *Service) *Shard {
 	}
 }
 
-// Init 从 Redis 恢复本分片的房间。
+// Init 从 Redis 恢复本分片的房间
 //
-// 与 Lobby 的懒加载不同，房间必须在接管时全量恢复：
-// 房间没有「登录」这个自然的加载触发点，玩家的下一条操作就已经需要它在内存里了。
+// 房间不能像玩家那样懒加载，它没有登录这个触发点，玩家下一条操作就要用了
 func (s *Shard) Init(ctx context.Context, o shard.Ownership) error {
 	now := time.Now()
 	s.nextFlush = store.Deadline(now, o.Shard, s.rs.node.Cfg.FlushL1Interval)
@@ -84,7 +82,7 @@ func (s *Shard) Init(ctx context.Context, o shard.Ownership) error {
 	for raw, cmd := range cmds {
 		blob, err := cmd.Bytes()
 		if errors.Is(err, redis.Nil) {
-			stale = append(stale, raw) // 索引里有、快照没了，清掉
+			stale = append(stale, raw) // 索引里有但快照没了，清掉
 			continue
 		}
 		if err != nil {
@@ -105,7 +103,6 @@ func (s *Shard) Init(ctx context.Context, o shard.Ownership) error {
 	return nil
 }
 
-// Handle 处理一条请求。
 func (s *Shard) Handle(m *bus.Msg) {
 	if s.closed {
 		_ = m.RespondErr(protocol.ErrUnavailable, "分片正在关闭，请重试")
@@ -129,7 +126,7 @@ func (s *Shard) Handle(m *bus.Msg) {
 	}
 }
 
-// Tick 推进战斗帧、刷盘、回收空房间。
+// Tick 推进战斗帧，顺带刷盘和回收空房间
 func (s *Shard) Tick(now time.Time) {
 	if s.closed {
 		return
@@ -140,7 +137,7 @@ func (s *Shard) Tick(now time.Time) {
 			continue
 		}
 		r.Frame++
-		// 战斗中间态是 L3，不刷盘；只有状态跃迁才需要落快照。
+		// 战斗中间态不刷盘，只有状态跃迁才落快照
 		if now.Sub(r.StartedAt) >= BattleTimeout {
 			s.settle(r)
 		}
@@ -158,7 +155,7 @@ func (s *Shard) Tick(now time.Time) {
 
 func (s *Shard) mark(roomID uint64) { s.dirty.Mark(roomID, modRoom) }
 
-// flush 把脏房间快照甩给 IO pool。
+// flush 把脏的房间快照甩给 IO pool
 func (s *Shard) flush() {
 	items := s.dirty.Take(store.ModuleLevel(modRoom), s.rs.node.Cfg.FlushBatchSize)
 	if len(items) == 0 {
@@ -179,7 +176,7 @@ func (s *Shard) buildBatch(items []store.Item) *store.Batch {
 	for _, it := range items {
 		r, ok := s.rooms[it.ID]
 		if !ok {
-			continue // 房间已关闭，关闭时已删除快照
+			continue // 房间关了，快照那会儿就删了
 		}
 		blob, err := r.Marshal()
 		if err != nil {
@@ -199,7 +196,7 @@ func (s *Shard) buildBatch(items []store.Item) *store.Batch {
 	return &store.Batch{Shard: s.o.Shard, Epoch: s.o.Epoch, Level: store.L1, Entities: ents}
 }
 
-// OnFlushResult 刷盘失败重新标脏。
+// OnFlushResult 刷盘失败重新标脏
 func (s *Shard) OnFlushResult(res *store.Result) {
 	if res == nil || s.closed {
 		return
@@ -209,7 +206,7 @@ func (s *Shard) OnFlushResult(res *store.Result) {
 	}
 }
 
-// FlushAllSync 全量同步刷盘。
+// FlushAllSync 全量同步刷盘
 func (s *Shard) FlushAllSync(ctx context.Context) error {
 	items := s.dirty.TakeAll()
 	if len(items) == 0 {
@@ -238,7 +235,6 @@ func (s *Shard) FlushAllSync(ctx context.Context) error {
 	return nil
 }
 
-// Close 分片释放。
 func (s *Shard) Close(reason shard.ReleaseReason) {
 	s.closed = true
 
@@ -259,7 +255,7 @@ func (s *Shard) Close(reason shard.ReleaseReason) {
 	s.dirty = store.NewDirtySet()
 }
 
-// gc 回收空房间与已结算房间。
+// gc 回收空房间和已结算的房间
 func (s *Shard) gc(now time.Time) {
 	var dead []uint64
 	for id, r := range s.rooms {
@@ -276,7 +272,7 @@ func (s *Shard) gc(now time.Time) {
 	}
 }
 
-// closeRoom 关闭房间并删除快照。
+// closeRoom 关房间并删快照
 func (s *Shard) closeRoom(id uint64) {
 	if _, ok := s.rooms[id]; !ok {
 		return
@@ -293,7 +289,7 @@ func (s *Shard) closeRoom(id uint64) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		// 删除也要过 epoch 校验：陈旧 owner 不该有权删掉新 owner 的房间。
+		// 删也要过 epoch 校验，陈旧 owner 没资格删新 owner 的房间
 		if err := fencer.Delete(ctx, sh, epoch, keys.Room(id)); err != nil {
 			logx.Warn("删除房间快照失败", "room", id, "err", err)
 			return
@@ -302,7 +298,7 @@ func (s *Shard) closeRoom(id uint64) {
 	}()
 }
 
-// indexRoom 把新房间加入分片索引。
+// indexRoom 把新房间登记进分片索引
 func (s *Shard) indexRoom(id uint64) {
 	rdb := s.rs.node.Redis
 	key := s.rs.node.Keys.RoomIndex(s.o.Shard)

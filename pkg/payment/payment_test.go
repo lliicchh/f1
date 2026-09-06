@@ -12,9 +12,7 @@ func order() Order {
 	}
 }
 
-// 评审 P0-2 的核心断言：没配置校验方式时，充值必须被拒绝。
-//
-// 「忘了配密钥」的默认行为如果是放行，那这道防线等于不存在。
+// 没配校验方式时充值必须被拒。忘了配密钥如果默认放行，这道防线就等于没有
 func TestDisabledByDefault(t *testing.T) {
 	v := New("", false)
 	if !v.Strict() {
@@ -43,7 +41,7 @@ func TestSignedVerifierRejectsTampering(t *testing.T) {
 	base := order()
 	base.Signature = Sign(secret, base)
 
-	// 逐项篡改，每一项都必须被识破 —— 这些正是「伪造充值」的常见手法。
+	// 逐项篡改，每一项都必须被识破，这些是「伪造充值」的常见手法
 	cases := []struct {
 		name   string
 		mutate func(*Order)
@@ -90,7 +88,7 @@ func TestSandboxOnlyAcceptsSandboxChannel(t *testing.T) {
 	}
 }
 
-// 有密钥时不应退化成沙箱：生产配了密钥就必须严格。
+// 有密钥时不应退化成沙箱：生产配了密钥就必须严格
 func TestSecretTakesPrecedenceOverSandbox(t *testing.T) {
 	v := New("s3cr3t", true)
 	if !v.Strict() {

@@ -1,4 +1,4 @@
-// Package shard 实现 §4 的分片模型：划分、认领、订阅、Actor 执行模型。
+// Package shard 分片模型：划分、认领、订阅、Actor 执行
 package shard
 
 import (
@@ -20,43 +20,38 @@ import (
 	"github.com/gamedev/f1/pkg/metrics"
 )
 
-// Kind 是分片空间。Lobby 与 Room 使用独立分片空间（§4.1）。
+// Kind 分片空间。Lobby 和 Room 各用一套，互不干扰
 type Kind string
 
 const (
 	KindLobby Kind = "lobby"
 	KindRoom  Kind = "room"
-	// KindMatch 是匹配池的桶空间（模式 × 段位），不落盘。
+	// KindMatch 匹配池的桶空间，按模式 × 段位切，不落盘
 	KindMatch Kind = "match"
 )
 
-// Of 计算实体所属分片。
+// Of 算出实体落在哪个分片，就是取模
 //
-//	lobbyShard(uid)   = uid % ShardCount
-//	roomShard(roomID) = roomID % ShardCount
-//
-// ShardCount 是常量，一经确定永不变更 —— 分片数变更等价于全量迁移（§4.1 / D2）。
+// ShardCount 定了就不能改，改一次等于全量迁移
 func Of(id uint64, shardCount uint32) uint32 { return uint32(id % uint64(shardCount)) }
 
-// Record 是 etcd 中的分片认领记录：
+// Record etcd 里的分片认领记录，形如
 //
 //	/game/s1/shard/lobby/0007 → {"node":"s1-lobby-1", "since":...}
 //
-// epoch 不写进值里，而是直接取这个键的 CreateRevision ——
-// 它就是「事务返回的 revision」，天然全局单调递增（§4.2），
-// 而且省掉一次「先占位再回写 epoch」的额外写入，认领快一倍。
-// 用 `etcdctl get --write-out=json` 可以看到 create_revision。
+// epoch 不写进值里，直接取键的 CreateRevision，它天然单调递增，
+// 还省掉一次「先占位再回写」的写入。etcdctl 加 --write-out=json 能看到
 type Record struct {
 	Node string `json:"node"`
-	// Since 便于运维观察 owner 持有时长，不参与任何判定。
+	// Since 只给运维看持有时长，不参与判定
 	Since int64 `json:"since"`
 }
 
-// Ownership 描述一个已认领的分片。
+// Ownership 描述一个已认领的分片
 type Ownership struct {
 	Kind  Kind
 	Shard uint32
-	Epoch int64 // 取 etcd 事务返回的 revision，天然全局单调递增（§4.2）
+	Epoch int64 // etcd 事务返回的 revision，单调递增
 	Node  string
 }
 
@@ -64,37 +59,37 @@ func (o Ownership) String() string {
 	return fmt.Sprintf("%s/%04d@epoch=%d", o.Kind, o.Shard, o.Epoch)
 }
 
-// ReleaseReason 说明分片为何被释放。
+// ReleaseReason 说明分片为何被释放
 type ReleaseReason string
 
 const (
-	// ReleaseGraceful 主动释放：handoff、再平衡、优雅下线。数据已刷盘。
+	// ReleaseGraceful 主动释放，数据已经刷完盘
 	ReleaseGraceful ReleaseReason = "graceful"
-	// ReleaseLeaseLost 续租失败：必须立即停止处理该分片消息（§4.2 软保护）。
+	// ReleaseLeaseLost 续租失败，得立刻停手
 	ReleaseLeaseLost ReleaseReason = "lease_lost"
-	// ReleaseFenced epoch fencing 拒绝写入：内存已过期，丢弃内存、停止服务、告警（§7.2）。
+	// ReleaseFenced 被 fencing 拒了，内存已过期，丢掉就是
 	ReleaseFenced ReleaseReason = "fenced"
-	// ReleaseStartFailed 认领后初始化失败，回滚认领。
+	// ReleaseStartFailed 初始化失败，回滚认领
 	ReleaseStartFailed ReleaseReason = "start_failed"
 )
 
-// Hooks 是认领/释放的回调。均在 Claimer 自己的 goroutine 中调用。
+// Hooks 认领和释放的回调，都在 Claimer 自己的 goroutine 里跑
 type Hooks struct {
-	// OnAcquire 在成功认领后调用：抬高 Redis epoch → 加载数据 → 订阅 subject（§10.2 步骤 5）。
-	// 返回错误则回滚认领（删除 etcd 键）。
+	// OnAcquire 认领成功后调用，顺序是抬 epoch、加载数据、订阅 subject。
+	// 返回错误就回滚认领
 	OnAcquire func(ctx context.Context, o Ownership) error
-	// OnRelease 在释放前调用：停止处理消息、刷盘（graceful 时）、清理内存。
+	// OnRelease 释放前调用：停手、刷盘、清内存
 	OnRelease func(ctx context.Context, o Ownership, reason ReleaseReason)
-	// OnFreed 在本节点释放分片后通知其他节点尽快重扫（可选）。
+	// OnFreed 释放后通知别的节点尽快重扫，可选
 	OnFreed func(kind Kind, shard uint32)
-	// LiveNodes 返回同类服务当前存活实例数，用于计算公平份额。返回 <=0 表示未知。
+	// LiveNodes 返回同类服务的存活实例数，用来算公平份额，<=0 表示不知道
 	LiveNodes func(ctx context.Context) int
-	// RequestHandoff 向当前 owner 发起主动交接（§10.2）。返回 nil 表示对方已 READY，
-	// 分片已释放，可以立即抢占。未设置时退化为「持有过多的节点主动让出」。
+	// RequestHandoff 向当前 owner 要分片。返回 nil 表示对方已释放，可以直接抢。
+	// 不设置就退化成「持有过多的节点主动让出」
 	RequestHandoff func(ctx context.Context, shard uint32, fromNode string) error
 }
 
-// Claimer 负责分片的认领、续租与释放。
+// Claimer 负责分片的认领、续租与释放
 type Claimer struct {
 	cli    *clientv3.Client
 	cfg    *config.Config
@@ -103,8 +98,7 @@ type Claimer struct {
 	hooks  Hooks
 
 	prefix string
-	// space 是分片空间大小。默认取 cfg.ShardCount（Lobby/Room 用 1024），
-	// Match 这类按「模式×段位」分桶的服务可以传入自己的空间大小。
+	// space 分片空间大小，默认 cfg.ShardCount。Match 按模式 × 段位分桶，空间小得多
 	space uint32
 
 	mu      sync.RWMutex
@@ -119,12 +113,12 @@ type Claimer struct {
 	cancel context.CancelFunc
 }
 
-// NewClaimer 构造分片认领器，使用 cfg.ShardCount 作为分片空间。
+// NewClaimer 构造认领器，分片空间取 cfg.ShardCount
 func NewClaimer(cli *clientv3.Client, cfg *config.Config, kind Kind, nodeID string, hooks Hooks) *Claimer {
 	return NewClaimerWithSpace(cli, cfg, kind, nodeID, cfg.ShardCount, hooks)
 }
 
-// NewClaimerWithSpace 构造使用自定义分片空间的认领器。
+// NewClaimerWithSpace 用自定义分片空间构造认领器
 func NewClaimerWithSpace(cli *clientv3.Client, cfg *config.Config, kind Kind, nodeID string, space uint32, hooks Hooks) *Claimer {
 	if space == 0 {
 		space = cfg.ShardCount
@@ -143,10 +137,9 @@ func NewClaimerWithSpace(cli *clientv3.Client, cfg *config.Config, kind Kind, no
 	}
 }
 
-// Space 返回分片空间大小。
 func (c *Claimer) Space() uint32 { return c.space }
 
-// Key 返回某分片的 etcd 键，序号补零到 4 位，保证前缀扫描有序。
+// Key 返回分片的 etcd 键，序号补零到 4 位，前缀扫描才有序
 func (c *Claimer) Key(shard uint32) string { return c.prefix + fmt.Sprintf("%04d", shard) }
 
 func (c *Claimer) shardFromKey(key string) (uint32, bool) {
@@ -160,7 +153,7 @@ func (c *Claimer) shardFromKey(key string) (uint32, bool) {
 	return uint32(n), true
 }
 
-// Start 建立 lease 并开始认领循环。
+// Start 建 lease 并开始认领
 func (c *Claimer) Start(ctx context.Context) error {
 	cctx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
@@ -177,10 +170,10 @@ func (c *Claimer) Start(ctx context.Context) error {
 	return nil
 }
 
-// newLease 创建一个新的 lease 并启动续租。
+// newLease 建 lease 并起续租协程
 //
-// 全节点共用一个 lease：lease 死了意味着本进程整体失联，所有分片一起释放才是正确行为。
-// 单个分片的主动释放通过删除键完成，不影响 lease。
+// 全节点共用一个 lease：它死了说明进程整体失联，所有分片一起释放才对。
+// 单个分片的主动释放走删键，不动 lease
 func (c *Claimer) newLease(ctx context.Context) error {
 	ttl := int64(c.cfg.ShardLeaseTTL.Seconds())
 	if ttl < 1 {
@@ -205,11 +198,10 @@ func (c *Claimer) newLease(ctx context.Context) error {
 	return nil
 }
 
-// keepAlive 以固定间隔续租。
+// keepAlive 定期续租
 //
-// 这里不用 clientv3 的自动 KeepAlive 流，而是自己按 ShardKeepAlive 间隔调用 KeepAliveOnce：
-// 续租间隔（2.5s）与 TTL（8s）的比例是设计约定的一部分，显式控制更可控，
-// 且失败时能立刻拿到错误 —— 「续租失败 → 立即停止处理该分片消息」（§4.2）。
+// 没用 clientv3 的自动 KeepAlive 流，自己按固定间隔调 KeepAliveOnce：
+// 间隔和 TTL 的比例是设计的一部分，显式控制更清楚，失败也能立刻拿到错误
 func (c *Claimer) keepAlive(ctx context.Context, id clientv3.LeaseID) {
 	defer c.wg.Done()
 	t := time.NewTicker(c.cfg.ShardKeepAlive)
@@ -233,17 +225,17 @@ func (c *Claimer) keepAlive(ctx context.Context, id clientv3.LeaseID) {
 			fails++
 			logx.Error("分片 lease 续租失败", "kind", c.kind, "fails", fails, "err", err)
 
-			// TTL 8s / 间隔 2.5s → 连续 2 次失败已逼近过期，必须立刻停手。
-			// 宁可早停：软保护的意义就是在 lease 真正过期、别人接管之前主动退出。
-			// lease 已被服务端回收时无需再等第二次。
+			// TTL 8s、间隔 2.5s，连丢两次就已经逼近过期，必须立刻停手。
+			// 宁可早停，也不要等到别人接管了还在写。
+			// lease 已经被服务端收走了，不用再等第二次
 			leaseGone := errors.Is(err, rpctypes.ErrLeaseNotFound)
 			if fails >= 2 || leaseGone {
 				metrics.ShardLeaseLost.WithLabelValues(string(c.kind)).Inc()
-				logx.Error("分片 lease 判定丢失，立即释放全部分片（软保护，§7.2）",
+				logx.Error("分片 lease 判定丢失，立即释放全部分片",
 					"kind", c.kind, "owned", c.Count(), "lease_gone", leaseGone)
 				c.releaseAll(context.Background(), ReleaseLeaseLost)
 
-				// 尝试重建 lease 后重新参与认领。
+				// 重建 lease 再回来参与认领
 				if ctx.Err() != nil {
 					return
 				}
@@ -256,11 +248,11 @@ func (c *Claimer) keepAlive(ctx context.Context, id clientv3.LeaseID) {
 	}
 }
 
-// loop 是认领主循环：定期扫描空闲分片并抢占。
+// loop 定期扫描空闲分片并抢占
 func (c *Claimer) loop(ctx context.Context) {
 	defer c.wg.Done()
 
-	// 启动时立刻扫一次。
+	// 启动时立刻扫一次
 	c.scanAndClaim(ctx)
 
 	t := time.NewTicker(c.scanInterval)
@@ -277,7 +269,7 @@ func (c *Claimer) loop(ctx context.Context) {
 	}
 }
 
-// TriggerRescan 请求尽快重扫（收到「某分片被释放」事件时调用）。
+// TriggerRescan 让下一轮扫描提前，收到释放事件时调
 func (c *Claimer) TriggerRescan() {
 	select {
 	case c.rescan <- struct{}{}:
@@ -285,7 +277,7 @@ func (c *Claimer) TriggerRescan() {
 	}
 }
 
-// scanAndClaim 扫描分片空间，抢占空闲分片；持有过多时主动让出。
+// scanAndClaim 扫一遍分片空间，抢空闲的，持有过多就让出去
 func (c *Claimer) scanAndClaim(ctx context.Context) {
 	c.mu.RLock()
 	stopped, lease := c.stopped, c.leaseID
@@ -317,13 +309,13 @@ func (c *Claimer) scanAndClaim(ctx context.Context) {
 		epochs[s] = kv.CreateRevision
 	}
 
-	// 与本地视图对账：etcd 上已不属于我的分片，说明被抢走了（lease 过期后被接管）。
+	// 和本地视图对一下：etcd 上已经不是我的，说明被接管了
 	c.reconcile(ctx, taken, epochs)
 
 	target := c.targetCount(ctx)
 	cur := c.Count()
 
-	// 统计每个 owner 持有多少分片，供再平衡判断。
+	// 统计每个 owner 拿了多少，给再平衡用
 	byNode := make(map[string]int, 8)
 	for _, rec := range taken {
 		byNode[rec.Node]++
@@ -338,7 +330,7 @@ func (c *Claimer) scanAndClaim(ctx context.Context) {
 
 	switch {
 	case cur < target && len(free) > 0:
-		// 优先吃空闲分片：没有 owner 在服务它们，抢占没有任何不可用窗口。
+		// 先吃空闲的，这些没人在服务，抢了不会造成不可用
 		rand.Shuffle(len(free), func(i, j int) { free[i], free[j] = free[j], free[i] })
 		got := c.claimMany(ctx, free, target-cur)
 		if got > 0 {
@@ -346,14 +338,13 @@ func (c *Claimer) scanAndClaim(ctx context.Context) {
 		}
 
 	case cur < target && len(free) == 0:
-		// 分片已被瓜分完，但本节点不足份额（典型场景：扩容后新实例上线）。
-		// 靠 lease 自然过期有 8~10s 不可用窗口，主动交接可压到百毫秒（§10.2），
-		// 因此这里由「想要的一方」发起 handoff，而不是让持有方盲目让出。
+		// 分片被瓜分完了但自己不够份额，典型是扩容后新实例上线。
+		// 等 lease 过期要 8~10s 不可用，主动交接能压到百毫秒，
+		// 所以由想要的一方发起，而不是让持有方盲目让出
 		c.requestRebalance(ctx, taken, byNode, target, cur)
 
 	case cur > target && c.hooks.RequestHandoff == nil:
-		// 未接入 handoff 的服务退化为主动让出：动作同样是
-		// 「停止处理 → 全量刷盘 → 释放锁」，只是新 owner 要等下一轮扫描才接手。
+		// 没接 handoff 的服务退化成主动让出，动作一样，只是新 owner 要等下一轮扫描
 		if !c.someoneBelow(ctx, byNode, target) {
 			return
 		}
@@ -369,18 +360,18 @@ func (c *Claimer) scanAndClaim(ctx context.Context) {
 	}
 }
 
-// maxHandoffPerRound 限制单轮主动交接数量，避免扩容瞬间大批分片同时抖动。
+// maxHandoffPerRound 限制单轮交接数，免得扩容瞬间大批分片一起抖
 const maxHandoffPerRound = 8
 
-// requestRebalance 向持有超额分片的节点发起主动交接。
+// requestRebalance 向持有超额的节点要分片
 func (c *Claimer) requestRebalance(ctx context.Context, taken map[uint32]Record, byNode map[string]int, target, cur int) {
 	if c.hooks.RequestHandoff == nil {
 		return
 	}
 
-	// 只找「持有数严格大于份额」的节点要分片。
-	// 1024 无法被实例数整除时，各节点会稳定在 target 与 target-1 之间，
-	// 这个条件保证不会出现「谁都想再要一个」的永久抖动。
+	// 只找持有数严格大于份额的节点。
+	// 1024 除不尽实例数时各节点会停在 target 和 target-1 之间，
+	// 这个条件保证不会出现谁都想再要一个的永久抖动
 	type cand struct {
 		shard uint32
 		node  string
@@ -398,7 +389,7 @@ func (c *Claimer) requestRebalance(ctx context.Context, taken map[uint32]Record,
 	if len(cands) == 0 {
 		return
 	}
-	// 优先从最重的节点上要。
+	// 优先从最重的节点上要
 	sort.Slice(cands, func(i, j int) bool { return cands[i].count > cands[j].count })
 
 	want := target - cur
@@ -412,7 +403,7 @@ func (c *Claimer) requestRebalance(ctx context.Context, taken map[uint32]Record,
 		if got >= want || ctx.Err() != nil {
 			break
 		}
-		// 别把同一个节点掏到低于份额。
+		// 别把同一个节点掏到低于份额
 		if byNode[cd.node]-taking[cd.node] <= target {
 			continue
 		}
@@ -427,7 +418,7 @@ func (c *Claimer) requestRebalance(ctx context.Context, taken map[uint32]Record,
 			continue
 		}
 
-		// 对方已 READY 并释放，立刻抢占。
+		// 对方已经放手了，立刻抢
 		if ok, cerr := c.claim(ctx, cd.shard); ok {
 			taking[cd.node]++
 			got++
@@ -442,7 +433,7 @@ func (c *Claimer) requestRebalance(ctx context.Context, taken map[uint32]Record,
 	}
 }
 
-// someoneBelow 报告是否存在低于份额的存活节点（含尚未持有任何分片的新实例）。
+// someoneBelow 报告有没有节点低于份额，包括一个分片都没拿到的新实例
 func (c *Claimer) someoneBelow(ctx context.Context, byNode map[string]int, target int) bool {
 	live := 0
 	if c.hooks.LiveNodes != nil {
@@ -459,14 +450,14 @@ func (c *Claimer) someoneBelow(ctx context.Context, byNode map[string]int, targe
 	return false
 }
 
-// reconcile 处理「本地认为持有、etcd 上却不是我」的分片。
+// reconcile 处理本地以为持有、etcd 上却不是我的分片
 func (c *Claimer) reconcile(ctx context.Context, taken map[uint32]Record, epochs map[uint32]int64) {
 	c.mu.RLock()
 	stale := make([]*Ownership, 0)
 	for s, o := range c.owned {
 		rec, ok := taken[s]
-		// epoch 变了说明键被重建过 —— 即使 node 名字相同（进程重启复用了 nodeID），
-		// 那也是另一任 owner，本地这份内存已经不作数了。
+		// epoch 变了说明键被重建过。就算 node 名字一样，那也是另一任 owner，
+		// 本地这份内存不作数了
 		if !ok || rec.Node != c.nodeID || epochs[s] != o.Epoch {
 			stale = append(stale, o)
 		}
@@ -481,7 +472,7 @@ func (c *Claimer) reconcile(ctx context.Context, taken map[uint32]Record, epochs
 	}
 }
 
-// targetCount 计算本实例应持有的分片数。
+// targetCount 算本实例该持有多少分片
 func (c *Claimer) targetCount(ctx context.Context) int {
 	if c.cfg.ShardMaxOwn > 0 {
 		return c.cfg.ShardMaxOwn
@@ -494,10 +485,10 @@ func (c *Claimer) targetCount(ctx context.Context) int {
 		n = 1
 	}
 	total := int(c.space)
-	return (total + n - 1) / n // 向上取整，保证 1024 能被全部覆盖
+	return (total + n - 1) / n // 向上取整，保证全部覆盖到
 }
 
-// claim 用 etcd 事务 CAS 抢占一个分片（§4.2）。
+// claim 用 etcd 事务抢一个分片
 func (c *Claimer) claim(ctx context.Context, s uint32) (bool, error) {
 	c.mu.RLock()
 	lease := c.leaseID
@@ -523,7 +514,7 @@ func (c *Claimer) claim(ctx context.Context, s uint32) (bool, error) {
 		return false, nil // 已被别人持有，正常情况
 	}
 
-	// 事务成功时 Header.Revision 即这个键的 CreateRevision，用它当 epoch。
+	// 事务成功时 Header.Revision 就是这个键的 CreateRevision，拿它当 epoch
 	epoch := resp.Header.Revision
 	o := &Ownership{Kind: c.kind, Shard: s, Epoch: epoch, Node: c.nodeID}
 
@@ -533,7 +524,7 @@ func (c *Claimer) claim(ctx context.Context, s uint32) (bool, error) {
 	metrics.ShardOwnerChanges.WithLabelValues(string(c.kind), "acquire").Inc()
 	metrics.ShardOwned.WithLabelValues(string(c.kind)).Set(float64(c.Count()))
 
-	// 抬高 Redis epoch → 加载数据 → 订阅 subject。失败则回滚。
+	// 抬 epoch、加载数据、订阅 subject，失败就回滚
 	if c.hooks.OnAcquire != nil {
 		if err := c.hooks.OnAcquire(ctx, *o); err != nil {
 			logx.Error("分片初始化失败，回滚认领", "kind", c.kind, "shard", s, "epoch", epoch, "err", err)
@@ -547,13 +538,13 @@ func (c *Claimer) claim(ctx context.Context, s uint32) (bool, error) {
 	return true, nil
 }
 
-// claimConcurrency 是并发抢占的上限。
+// claimConcurrency 并发抢占上限
 //
-// 逐个串行抢占时每个分片要一次 etcd 往返，1024 个分片会拖到几十秒，
-// 直接把 §13 承诺的「8~15s 接管」打穿。这些事务彼此独立，可以放心并发。
+// 串行抢每个分片一次 etcd 往返，1024 个要拖几十秒。
+// 这些事务互相独立，可以并发
 const claimConcurrency = 16
 
-// claimMany 并发抢占一批分片，返回成功数。
+// claimMany 并发抢一批，返回成功数
 func (c *Claimer) claimMany(ctx context.Context, shards []uint32, want int) int {
 	if want <= 0 || len(shards) == 0 {
 		return 0
@@ -607,7 +598,7 @@ func (c *Claimer) claimMany(ctx context.Context, shards []uint32, want int) int 
 	return got
 }
 
-// Release 主动释放一个分片：停止处理 → 刷盘 → 删除 etcd 键（§10.2 步骤 2~3）。
+// Release 主动释放一个分片：停手、刷盘、删键
 func (c *Claimer) Release(ctx context.Context, s uint32, reason ReleaseReason) error {
 	c.mu.RLock()
 	o, ok := c.owned[s]
@@ -629,7 +620,7 @@ func (c *Claimer) Release(ctx context.Context, s uint32, reason ReleaseReason) e
 	return nil
 }
 
-// dropLocal 只做本地清理（回调 + 移除记录），不碰 etcd。
+// dropLocal 只清本地，不碰 etcd
 func (c *Claimer) dropLocal(ctx context.Context, o *Ownership, reason ReleaseReason) {
 	c.mu.Lock()
 	if _, ok := c.owned[o.Shard]; !ok {
@@ -647,7 +638,7 @@ func (c *Claimer) dropLocal(ctx context.Context, o *Ownership, reason ReleaseRea
 	logx.Info("分片已释放", "kind", c.kind, "shard", o.Shard, "epoch", o.Epoch, "reason", reason)
 }
 
-// releaseAll 释放全部分片（lease 丢失或下线）。
+// releaseAll 释放全部分片
 func (c *Claimer) releaseAll(ctx context.Context, reason ReleaseReason) {
 	for _, s := range c.Owned() {
 		if reason == ReleaseGraceful {
@@ -663,11 +654,9 @@ func (c *Claimer) releaseAll(ctx context.Context, reason ReleaseReason) {
 	}
 }
 
-// Fence 因 epoch fencing 被拒而立即放弃某分片。
+// Fence 因被 fencing 拒而立刻放弃某分片
 //
-// 「旧 owner 收到拒绝 → 丢弃该分片内存、停止服务、告警。绝不重试」（§7.2）。
-// 这里刻意不去删除 etcd 键：此刻该键要么已因 lease 过期消失，要么已属于新 owner，
-// 删它反而可能误删别人的所有权。
+// 故意不删 etcd 键：这时候键要么已经过期消失，要么属于新 owner，删了反而误伤
 func (c *Claimer) Fence(shard uint32) {
 	c.mu.RLock()
 	o, ok := c.owned[shard]
@@ -678,7 +667,7 @@ func (c *Claimer) Fence(shard uint32) {
 	c.dropLocal(context.Background(), o, ReleaseFenced)
 }
 
-// Owned 返回当前持有的分片列表。
+// Owned 返回当前持有的分片列表
 func (c *Claimer) Owned() []uint32 {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -689,14 +678,13 @@ func (c *Claimer) Owned() []uint32 {
 	return out
 }
 
-// Count 返回持有分片数。
 func (c *Claimer) Count() int {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return len(c.owned)
 }
 
-// Epoch 返回某分片的 epoch。
+// Epoch 返回某分片的 epoch
 func (c *Claimer) Epoch(s uint32) (int64, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -707,7 +695,6 @@ func (c *Claimer) Epoch(s uint32) (int64, bool) {
 	return o.Epoch, true
 }
 
-// Owns 报告是否持有该分片。
 func (c *Claimer) Owns(s uint32) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -715,7 +702,7 @@ func (c *Claimer) Owns(s uint32) bool {
 	return ok
 }
 
-// Lookup 查询某分片当前的 owner（可能是别的节点）及其 epoch。
+// Lookup 查某分片现在归谁，以及它的 epoch
 func (c *Claimer) Lookup(ctx context.Context, s uint32) (Record, int64, bool, error) {
 	gctx, cancel := context.WithTimeout(ctx, c.cfg.EtcdTimeout)
 	defer cancel()
@@ -733,7 +720,7 @@ func (c *Claimer) Lookup(ctx context.Context, s uint32) (Record, int64, bool, er
 	return rec, resp.Kvs[0].CreateRevision, true, nil
 }
 
-// Stop 优雅停止：释放全部分片、撤销 lease。
+// Stop 释放全部分片并撤销 lease
 func (c *Claimer) Stop(ctx context.Context) {
 	c.mu.Lock()
 	if c.stopped {

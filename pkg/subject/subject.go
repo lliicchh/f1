@@ -1,4 +1,4 @@
-// Package subject 实现 §5.1 的 NATS subject 命名规范。
+// Package subject NATS subject 的命名规范
 //
 //	req.   请求-应答    Core NATS
 //	evt.   事件广播     Core NATS
@@ -6,8 +6,7 @@
 //	job.   必达任务     JetStream
 //	ctl.   控制面       Core NATS
 //
-// 前缀语义即投递保证：任何「丢了会导致资产不一致」的操作必须用 job. 前缀，
-// 在命名上强制体现，降低误用（§5.2）。
+// 前缀就是投递保证。丢了会造成资产不一致的操作必须用 job.
 package subject
 
 import (
@@ -16,7 +15,7 @@ import (
 	"strings"
 )
 
-// 前缀常量。
+// 前缀常量
 const (
 	PrefixReq  = "req"
 	PrefixEvt  = "evt"
@@ -25,7 +24,7 @@ const (
 	PrefixCtl  = "ctl"
 )
 
-// 服务名（与 ident.SvcType.Name() 一致，这里避免包依赖单独写常量）。
+// 服务名，和 ident.SvcType.Name() 一致，单独写一份免得引包
 const (
 	KindLobby = "lobby"
 	KindRoom  = "room"
@@ -36,125 +35,107 @@ const (
 
 // ---------------------------- req. ----------------------------
 
-// LobbyReq 返回 req.lobby.{shard}.{cmd}，shard = uid % ShardCount。
 func LobbyReq(shard uint32, cmd string) string {
 	return fmt.Sprintf("req.lobby.%d.%s", shard, cmd)
 }
 
-// LobbyShardWildcard 返回某个 lobby 分片的订阅通配 subject。
+// LobbyShardWildcard 某个 lobby 分片的订阅通配
 //
-// 注意：订阅时不能加 queue group。分片独占性正是靠「同一 subject 只有一个订阅者」
-// 保证的，加了反而允许多实例同时订阅，破坏独占语义（§4.3）。
+// 订阅时别加 queue group，分片独占靠的就是同一 subject 只有一个订阅者
 func LobbyShardWildcard(shard uint32) string {
 	return fmt.Sprintf("req.lobby.%d.>", shard)
 }
 
-// RoomReq 返回 req.room.{shard}.{cmd}，shard = roomID % ShardCount。
 func RoomReq(shard uint32, cmd string) string {
 	return fmt.Sprintf("req.room.%d.%s", shard, cmd)
 }
 
-// RoomShardWildcard 返回某个 room 分片的订阅通配 subject（同样不带 queue group）。
+// RoomShardWildcard 某个 room 分片的订阅通配，同样不带 queue group
 func RoomShardWildcard(shard uint32) string {
 	return fmt.Sprintf("req.room.%d.>", shard)
 }
 
-// MatchReq 返回 req.match.{mode}.{tier}。
 func MatchReq(mode, tier uint32) string {
 	return fmt.Sprintf("req.match.%d.%d", mode, tier)
 }
 
-// MatchWildcard 返回匹配服的订阅通配（按 模式×段位 分片）。
 func MatchWildcard() string { return "req.match.>" }
 
-// MatchModeWildcard 订阅某个模式下所有段位。
 func MatchModeWildcard(mode uint32) string { return fmt.Sprintf("req.match.%d.*", mode) }
 
-// ChatReq 返回 req.chat.{cmd}。Chat 不持有数据，可以且应该用 queue group（§2.1）。
+// ChatReq Chat 不持有数据，可以用 queue group
 func ChatReq(cmd string) string { return "req.chat." + cmd }
 
-// ChatWildcard 返回聊天服订阅通配。
 func ChatWildcard() string { return "req.chat.>" }
 
-// WorldReq 返回 req.world.{cmd}。World 选主主备，只有 leader 订阅。
+// AccountReq Account 不持有玩家数据，同样可以用 queue group
+func AccountReq(cmd string) string { return "req.account." + cmd }
+
+func AccountWildcard() string { return "req.account.>" }
+
+// WorldReq 只有 leader 订
 func WorldReq(cmd string) string { return "req.world." + cmd }
 
-// WorldWildcard 返回世界服订阅通配。
 func WorldWildcard() string { return "req.world.>" }
 
 // ---------------------------- push. ----------------------------
 
-// GatePush 返回 push.gate.{gateID}，定向推送。
-//
-// 网关只订两个 subject，订阅数与在线人数无关（§9.1）。
 func GatePush(gateID string) string { return "push.gate." + gateID }
 
-// Broadcast 返回 push.broadcast，全服广播。
+// Broadcast 全服广播
 const Broadcast = "push.broadcast"
 
 // ---------------------------- evt. ----------------------------
 
-// PlayerEvt 返回 evt.player.{uid}.{event}。
 func PlayerEvt(uid uint64, event string) string {
 	return fmt.Sprintf("evt.player.%d.%s", uid, event)
 }
 
-// PlayerEvtWildcard 订阅某玩家全部事件。
 func PlayerEvtWildcard(uid uint64) string { return fmt.Sprintf("evt.player.%d.>", uid) }
 
-// AllPlayerEvt 订阅全部玩家事件（慎用，量大）。
+// AllPlayerEvt 订阅所有玩家事件，量很大，慎用
 const AllPlayerEvt = "evt.player.>"
 
-// RoomEvt 返回 evt.room.{roomID}.{event}。
 func RoomEvt(roomID uint64, event string) string {
 	return fmt.Sprintf("evt.room.%d.%s", roomID, event)
 }
 
-// MatchEvt 匹配成功事件。
+// MatchFoundEvt 匹配成功事件
 const MatchFoundEvt = "evt.match.found"
 
-// SessionChangedEvt 会话变更事件（登录/顶号/下线）。
-//
-// 网关与 Room 会本地缓存 session 路由以省一次 Redis 查询，
-// 顶号时必须让缓存失效（§9.1），靠这个事件广播。
+// SessionChangedEvt 会话变更事件。网关和 Room 缓存了路由，靠它失效
 const SessionChangedEvt = "evt.session.changed"
 
-// ShardFreedEvt 分片被主动释放，提示其他实例尽快重扫认领。
+// ShardFreedEvt 提示其他实例有分片被释放了，可以来抢
 func ShardFreedEvt(kind string) string { return "evt.shard." + kind + ".freed" }
 
 // ---------------------------- job.（JetStream）----------------------------
 
-// JobTransfer 返回 job.transfer.{txid}，跨分片资源转移（§8）。
 func JobTransfer(txid string) string { return "job.transfer." + txid }
 
-// JobTransferWildcard 消费端订阅通配。
+// JobTransferWildcard 消费端订阅通配
 const JobTransferWildcard = "job.transfer.*"
 
-// JobMailSend 发信。
+// JobMailSend 发信
 const JobMailSend = "job.mail.send"
 
-// JobBattleSettle 战斗发奖。
-//
-// 发奖属于「丢了会导致资产不一致」的操作，必须走 JetStream 而非 Core NATS（§5.2）。
+// JobBattleSettle 战斗发奖，丢了会造成资产不一致，所以走 JetStream
 const JobBattleSettle = "job.battle.settle"
 
-// JobWildcard 覆盖全部必达任务，用于建 JetStream Stream。
+// JobWildcard 覆盖全部必达任务，建 Stream 用
 const JobWildcard = "job.>"
 
 // ---------------------------- ctl. ----------------------------
 
-// CtlHandoff 返回 ctl.node.{nodeID}.handoff，分片交接（§10.2）。
 func CtlHandoff(nodeID string) string { return "ctl.node." + nodeID + ".handoff" }
 
-// CtlShutdown 返回 ctl.node.{nodeID}.shutdown，优雅下线。
 func CtlShutdown(nodeID string) string { return "ctl.node." + nodeID + ".shutdown" }
 
-// CtlNodeWildcard 返回某节点全部控制面消息。
 func CtlNodeWildcard(nodeID string) string { return "ctl.node." + nodeID + ".>" }
 
 // ---------------------------- 解析 ----------------------------
 
-// Prefix 取 subject 的第一段，用于指标打标（避免 label 基数爆炸）。
+// Prefix 取 subject 前两段做指标 label，免得基数爆炸
 func Prefix(subj string) string {
 	if i := strings.IndexByte(subj, '.'); i > 0 {
 		head := subj[:i]
@@ -167,7 +148,7 @@ func Prefix(subj string) string {
 	return subj
 }
 
-// ParseShardReq 解析 req.{kind}.{shard}.{cmd}，返回 kind、shard、cmd。
+// ParseShardReq 解析 req.{kind}.{shard}.{cmd}，返回 kind、shard、cmd
 func ParseShardReq(subj string) (kind string, shard uint32, cmd string, ok bool) {
 	parts := strings.Split(subj, ".")
 	if len(parts) < 4 || parts[0] != PrefixReq {
@@ -180,7 +161,7 @@ func ParseShardReq(subj string) (kind string, shard uint32, cmd string, ok bool)
 	return parts[1], uint32(n), strings.Join(parts[3:], "."), true
 }
 
-// ParseMatchReq 解析 req.match.{mode}.{tier}。
+// ParseMatchReq 解析 req.match.{mode}.{tier}
 func ParseMatchReq(subj string) (mode, tier uint32, ok bool) {
 	parts := strings.Split(subj, ".")
 	if len(parts) != 4 || parts[0] != PrefixReq || parts[1] != KindMatch {

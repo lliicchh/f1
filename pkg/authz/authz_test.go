@@ -9,9 +9,7 @@ import (
 	"github.com/gamedev/f1/pkg/protocol"
 )
 
-// 评审 P0-1 的核心断言：造币类命令绝不能是客户端级。
-//
-// 这条测试的价值不在于当下 —— 它是为了拦住未来某次「顺手把新命令加进白名单」的改动。
+// 造币类命令绝不能是客户端级。这条测试是为了拦住以后「顺手把新命令加进白名单」
 func TestMoneyCommandsAreNotClientCallable(t *testing.T) {
 	forbidden := []protocol.Cmd{
 		protocol.CmdAddCurrency,
@@ -27,7 +25,7 @@ func TestMoneyCommandsAreNotClientCallable(t *testing.T) {
 	}
 	for _, c := range forbidden {
 		if c.ClientCallable() {
-			t.Errorf("命令 %s 绝不能允许客户端调用 —— 它能凭空造币或越权", c)
+			t.Errorf("命令 %s 绝不能允许客户端调用，它能凭空造币或越权", c)
 		}
 		if err := CheckClient(c); err == nil {
 			t.Errorf("CheckClient(%s) 应当拒绝", c)
@@ -35,7 +33,7 @@ func TestMoneyCommandsAreNotClientCallable(t *testing.T) {
 	}
 }
 
-// 未登记的命令必须落到最严级别：漏配的后果应该是「调不通」而不是「被刷钱」。
+// 未登记的命令必须落到最严级别：漏配的后果应该是「调不通」而不是「被刷钱」
 func TestUnknownCommandDefaultsToInternal(t *testing.T) {
 	unknown := protocol.Cmd(60001)
 	if unknown.Level() != protocol.LevelInternal {
@@ -46,7 +44,7 @@ func TestUnknownCommandDefaultsToInternal(t *testing.T) {
 	}
 }
 
-// 玩家正常玩游戏要用的命令必须是客户端级，否则功能不可用。
+// 玩家正常玩游戏要用的命令必须是客户端级，否则功能不可用
 func TestPlayerCommandsAreClientCallable(t *testing.T) {
 	allowed := []protocol.Cmd{
 		protocol.CmdLogin, protocol.CmdHeartbeat, protocol.CmdGetBag,
@@ -82,7 +80,7 @@ func TestSignAndVerify(t *testing.T) {
 	}
 }
 
-// 客户端级命令不需要签名，也不应因为没签名被拒。
+// 客户端级命令不需要签名，也不应因为没签名被拒
 func TestClientCommandNeedsNoSignature(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdGetBag, 1001)
@@ -97,7 +95,7 @@ func TestClientCommandNeedsNoSignature(t *testing.T) {
 	}
 }
 
-// 网关（fromClient）永远不能带进内部命令，即使签名是对的。
+// 网关带进来的内部命令一律拒，签名对也不行
 func TestInternalCommandFromClientAlwaysRejected(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdAddCurrency, 1001)
@@ -127,7 +125,7 @@ func TestWrongSecretRejected(t *testing.T) {
 	}
 }
 
-// 签名绑定 cmd：不能把 add_item 的签名挪去当 add_currency 用。
+// 签名绑定 cmd：不能把 add_item 的签名挪去当 add_currency 用
 func TestSignatureBoundToCommand(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdAddItem, 1001)
@@ -139,7 +137,7 @@ func TestSignatureBoundToCommand(t *testing.T) {
 	}
 }
 
-// 签名绑定 uid：不能把给 A 发奖的签名挪去给 B 发奖。
+// 签名绑定 uid：不能把给 A 发奖的签名挪去给 B 发奖
 func TestSignatureBoundToUID(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdAddCurrency, 1001)
@@ -151,13 +149,13 @@ func TestSignatureBoundToUID(t *testing.T) {
 	}
 }
 
-// 签名有时效：旧签名不能被无限重放。
+// 签名有时效：旧签名不能被无限重放
 func TestExpiredSignatureRejected(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdAddCurrency, 1001)
 	env.TsMs = time.Now().Add(-2 * MaxSkew).UnixMilli()
 	_ = s.Sign(env)
-	// Sign 会重置 ts_ms 只在为 0 时；这里手工构造一个过期签名。
+	// Sign 会重置 ts_ms 只在为 0 时；这里手工构造一个过期签名
 	env.TsMs = time.Now().Add(-2 * MaxSkew).UnixMilli()
 	env.Auth = s.digest(env.GetCmd(), env.GetUid(), env.GetTsMs(), env.GetTraceId())
 
@@ -166,7 +164,7 @@ func TestExpiredSignatureRejected(t *testing.T) {
 	}
 }
 
-// GM 命令必须留下操作者，否则事后无法追责。
+// GM 命令必须留下操作者，否则事后无法追责
 func TestGMCommandRequiresOperator(t *testing.T) {
 	s := NewSigner("secret")
 	env := newEnv(protocol.CmdGMGrant, 1001)
@@ -183,14 +181,14 @@ func TestGMCommandRequiresOperator(t *testing.T) {
 	}
 }
 
-// 没有密钥的进程（例如网关）签不出内部命令 —— 这是物理隔离，不只是约定。
+// 没有密钥的进程（例如网关）签不出内部命令，这是物理隔离，不只是约定
 func TestNoSecretCannotSign(t *testing.T) {
 	s := NewSigner("")
 	env := newEnv(protocol.CmdAddCurrency, 1001)
 	if err := s.Sign(env); !errors.Is(err, ErrNoSecret) {
 		t.Fatalf("无密钥不应签出内部命令，实际 %v", err)
 	}
-	// 也不能校验：无法校验就必须拒绝，而不是放行。
+	// 也不能校验：无法校验就必须拒绝，而不是放行
 	env.Auth = []byte("whatever")
 	if err := s.Verify(env, false); err == nil {
 		t.Fatal("无密钥时不应放行内部命令")

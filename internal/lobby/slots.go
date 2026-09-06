@@ -21,7 +21,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// handleRoundState 返回未结算的回合，供断线重连恢复（评审 P1-1）。
+// handleRoundState 返回未结算的回合，给断线重连用
 func (s *Shard) handleRoundState(p *Player, m *bus.Msg) {
 	resp := &pb.RoundStateResp{}
 	if p.Round != nil {
@@ -31,21 +31,12 @@ func (s *Shard) handleRoundState(p *Player, m *bus.Msg) {
 	_ = m.Respond(resp)
 }
 
-// handleSpin 是 slots 的核心：一次旋转。
+// handleSpin 转一次，顺序别改
 //
-// 这是整个服务里最需要小心的一段代码，因为它同时是：
-//   - 一笔金融事务（扣注、派彩）
-//   - 一个可中断的状态机（免费旋转）
-//   - 一条必须能事后复算的审计记录
-//
-// 因此它的每一步都遵循同一个模式：
-//
-//  1. 先做所有拒绝性检查（限额、档位、回合冲突）—— 拒绝不产生任何副作用
-//  2. 在**副本**上算出结果
-//  3. 一次原子提交：余额 + 回合 + 限额 + 流水
-//  4. 提交成功后才改内存、才回包
-//
-// 任何把顺序打乱的改动都会引入资损或对账差异。
+//  1. 检查
+//  2. 在副本上算结果
+//  3. 余额、回合、限额、流水一起落库
+//  4. 提交成功之后才改内存并回包
 func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	var req pb.SpinReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -56,7 +47,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	conf := s.lob.conf.Get()
 	now := time.Now()
 
-	// ---- 1. 拒绝性检查 ----
+	// 一、先把该拒的都拒掉
 
 	gameID := req.GetGameId()
 	machine, ok := conf.Machine(gameID)
@@ -67,8 +58,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 
 	free := p.Round != nil && p.Round.GetFreeSpinsLeft() > 0
 	if p.Round != nil && !free {
-		// 有回合但没有免费旋转次数：说明上一局没走完结算流程，先收尾。
-		// 直接开新局会把上一局的派彩吞掉。
+		// 有回合但没免费次数，说明上一局没收尾。直接开新局会把上一局的派彩吞掉
 		_ = m.RespondErr(protocol.ErrRoundOpen, "存在未结算的回合 %d", p.Round.GetRoundId())
 		return
 	}
@@ -80,7 +70,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	bet := req.GetBet()
 	currency := machine.Currency
 	if free {
-		// 免费旋转沿用触发时的投注额与币种，客户端说了不算。
+		// 免费旋转用触发时的投注额和币种，客户端说了不算
 		bet = p.Round.GetBet()
 		currency = p.Round.GetCurrency()
 	} else {
@@ -93,7 +83,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 			return
 		}
 
-		// 责任游戏限额：只对付费旋转生效（免费旋转没有投注）。
+		// 免费旋转没投注，限额只管付费的
 		rgCfg := conf.RG
 		rg.Rollover(p.RG, now, rgCfg)
 		if d := rg.CheckBet(p.RG, bet, now, rgCfg); !d.Allowed {
@@ -107,19 +97,19 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 		}
 	}
 
-	// ---- 2. 在副本上算结果 ----
+	// 二、在副本上算
 
 	round := p.Round
 	var src *rng.Source
 	if free {
-		// 免费旋转沿用回合的种子链：整局只有一颗种子，复算时一次重放到底。
+		// 免费旋转接着用回合的那颗种子，整局一条随机流，复算时一次重放到底
 		seed, err := rng.ParseSeed(round.GetSeedHex())
 		if err != nil {
 			_ = m.RespondErr(protocol.ErrInternal, "回合种子损坏")
 			return
 		}
 		src = rng.New(seed)
-		// 重放到当前进度，让随机流对齐。
+		// 先重放到当前进度，把随机流对齐
 		if err := s.fastForward(machine, src, round); err != nil {
 			_ = m.RespondErr(protocol.ErrInternal, "回合重放失败: %v", err)
 			return
@@ -164,7 +154,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 		return
 	}
 
-	// 副本上推进回合状态。
+	// 推进回合状态（还是副本）
 	next := proto.Clone(round).(*pb.Round)
 	next.SpinIndex++
 	next.TotalWin += result.TotalWin
@@ -180,7 +170,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 		}
 	}
 
-	// 副本上算余额。
+	// 算余额（还是副本）
 	baseCopy := proto.Clone(p.Base).(*pb.PlayerBase)
 	if baseCopy.Currency == nil {
 		baseCopy.Currency = map[uint32]int64{}
@@ -204,8 +194,8 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 			baseCopy.Currency[currency]).WithRound(next.RoundId, gameID, confVer))
 	}
 
-	// 奖池注入：从投注里切一小块。它也要进流水，
-	// 否则「投注额」与「玩家实际支出」对不上，且奖池差额无从追溯。
+	// 从投注里切一小块进奖池。这笔也要记流水，
+	// 否则投注额和玩家实际支出对不上，奖池差额也没法追
 	var contrib int64
 	if !free && machine.JackpotPool != "" {
 		contrib = jackpot.ContributionOf(bet, machine.JackpotContribBP)
@@ -217,21 +207,21 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 		}
 	}
 
-	// 限额累计（副本）。
+	// 累计限额
 	rgCopy := proto.Clone(p.RG).(*pb.PlayerRG)
 	if !free {
 		rg.ApplyBet(rgCopy, bet)
 	}
 	rg.ApplyWin(rgCopy, result.TotalWin)
 
-	// 回合是否结束。
+	// 看这局完了没
 	finished := next.FreeSpinsLeft == 0
 	if finished {
 		next.State = protocol.RoundSettled
 		next.SettledAt = now.UnixMilli()
 	}
 
-	// ---- 3. 原子提交 ----
+	// 三、一次提交落盘
 
 	keys := s.lob.node.Keys
 	baseBlob, e1 := proto.Marshal(baseCopy)
@@ -242,7 +232,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	}
 	var roundBlob []byte
 	if finished {
-		// 结算后清掉回合，避免下次加载把它当成未完成的局恢复出来。
+		// 结算了就清掉，免得下次加载当成未完成的局恢复出来
 		roundBlob = []byte{}
 	} else {
 		roundBlob, err = proto.Marshal(next)
@@ -271,8 +261,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	}
 	payload, _ := proto.Marshal(resp)
 
-	// 幂等键：客户端重发同一次 spin 不得重复扣费。
-	// 免费旋转用回合号 + 旋转序号，天然唯一；付费旋转用客户端提供的 client_id。
+	// 幂等键。免费旋转用回合号加序号，天然唯一；付费旋转用客户端给的 client_id
 	idem := req.GetClientId()
 	if idem == "" || free {
 		idem = fmt.Sprintf("spin%d-%d", next.RoundId, next.SpinIndex)
@@ -297,7 +286,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 			return
 		}
 
-		// ---- 4. 落盘成功，换进内存 ----
+		// 四、落盘成功了，换进内存
 		hadRound := p.Round != nil
 		p.Base = baseCopy
 		p.RG = rgCopy
@@ -328,8 +317,7 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 
 		_ = m.Respond(resp)
 
-		// 提交之后的收尾动作都是「best effort」：它们失败不影响玩家的钱，
-		// 且都有流水或待处理索引可以追溯补偿。
+		// 下面这些都是尽力而为：失败了不影响玩家的钱，也都有流水或索引可以补
 		if contrib > 0 {
 			s.lob.contributeJackpot(machine.JackpotPool, contrib)
 		}
@@ -345,11 +333,10 @@ func (s *Shard) handleSpin(p *Player, m *bus.Msg) {
 	})
 }
 
-// fastForward 把随机流重放到回合当前进度。
+// fastForward 把随机流重放到当前进度
 //
-// 免费旋转必须与主旋转共用一条随机流，否则「同一颗种子重放整局」就不成立，
-// 复算能力也就没了。代价是每次免费旋转要重放前面若干次 ——
-// 一局最多几十次旋转，纯内存计算，开销可以忽略。
+// 免费旋转得和主旋转共用一条随机流，不然「一颗种子重放整局」就不成立了。
+// 代价是每次免费旋转要把前面几次重跑一遍，一局最多几十次，纯内存计算
 func (s *Shard) fastForward(m *gameconf.SlotMachine, src *rng.Source, round *pb.Round) error {
 	var freeLeft, mult uint32
 	mult = 1
@@ -374,7 +361,6 @@ func (s *Shard) fastForward(m *gameconf.SlotMachine, src *rng.Source, round *pb.
 	return nil
 }
 
-// entry 构造一条带流水号的账目。
 func (s *Shard) entry(uid uint64, t ledger.Type, currency uint32, amount, balance int64) *ledger.Entry {
 	e := ledger.New(uid, t, currency, amount, balance)
 	if id, err := s.lob.node.NextID(); err == nil {
@@ -383,7 +369,7 @@ func (s *Shard) entry(uid uint64, t ledger.Type, currency uint32, amount, balanc
 	return e
 }
 
-// handleJackpotInfo 返回奖池水位。只读投影，不经过 World。
+// handleJackpotInfo 返回奖池水位，直接读 Redis，不经过 World
 func (s *Shard) handleJackpotInfo(m *bus.Msg) {
 	var req pb.JackpotInfoReq
 	_ = bus.Unpack(m.Env, &req)
@@ -414,15 +400,14 @@ func (s *Shard) handleJackpotInfo(m *bus.Msg) {
 	}()
 }
 
-// handleRGStatus 返回责任游戏限额状态。
+// handleRGStatus 返回责任游戏限额状态
 func (s *Shard) handleRGStatus(p *Player, m *bus.Msg) {
 	conf := s.lob.conf.Get()
 	_ = m.Respond(rg.Status(p.RG, time.Now(), conf.RG))
 }
 
-// handleApplyJackpot 是奖池派彩的入账端（内部命令）。
-//
-// 与跨分片转移同一套幂等机制：txid 去重，重复投递不会重复入账。
+// handleApplyJackpot 奖池派彩的入账端，内部命令。
+// 幂等和跨分片转移一样靠 txid 去重
 func (s *Shard) handleApplyJackpot(p *Player, m *bus.Msg) {
 	var req pb.JackpotClaimReq
 	if err := bus.Unpack(m.Env, &req); err != nil {

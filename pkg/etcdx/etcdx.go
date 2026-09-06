@@ -1,4 +1,4 @@
-// Package etcdx 封装 etcd 客户端的创建与通用工具。
+// Package etcdx 建 etcd 客户端
 package etcdx
 
 import (
@@ -11,7 +11,7 @@ import (
 	"github.com/gamedev/f1/pkg/config"
 )
 
-// New 按配置创建 etcd 客户端，并做一次连通性探测。
+// New 按配置建客户端，顺带探一下连通性
 func New(cfg *config.Config) (*clientv3.Client, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:            cfg.EtcdEndpoints,

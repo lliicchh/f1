@@ -20,33 +20,22 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// maxWaitersPerPlayer 限制单个玩家的排队请求数。
+// maxWaitersPerPlayer 限制单个玩家能排多少请求
 //
-// 超过说明该玩家的加载或提交卡住了，继续堆积只会放大故障。
-// slots 的 autoplay 会连续发 spin，每次 spin 都是一次 L0 提交，
-// 因此这个值不能太小 —— 太小会在网络抖动时误伤正常玩家（评审 P2-2）。
+// 排满说明这个玩家的加载或提交卡住了，再堆只会放大故障。
+// autoplay 会连着发 spin，每次都是一次 L0 提交，所以不能设太小，
+// 太小网络一抖就误伤正常玩家
 const maxWaitersPerPlayer = 256
 
-// isGatewayNode 判断消息是否来自网关。
+// isGatewayNode 看消息是不是网关发来的。nodeID 形如 s1-gateway-1，服务名在第二段
 //
-// nodeID 形如 s1-gateway-1，服务名是第二段。这只是快速路径判断；
-// 真正的安全边界是签名校验 —— 网关没有内部密钥，谎报身份也签不出合法签名。
+// 这只是个快速判断，真正的边界是签名，网关没内部密钥，谎报身份也签不出来
 func isGatewayNode(nodeID string) bool {
 	parts := strings.Split(nodeID, "-")
 	return len(parts) >= 2 && parts[1] == "gateway"
 }
 
-// Shard 是一个 Lobby 分片的全部内存状态。
-//
-// 对应设计文档 §4.4 的结构：
-//
-//	Shard {
-//	    id      uint32
-//	    epoch   int64
-//	    mbox    chan *Msg           // 由框架持有
-//	    players map[uid]*Player     // 仅本 goroutine 访问
-//	    dirty   map[uid]DirtyFlag
-//	}
+// Shard 一个 Lobby 分片的全部内存状态。players 和 dirty 只有本 goroutine 碰
 type Shard struct {
 	o   shard.Ownership
 	svc *shardsvc.Service
@@ -55,7 +44,7 @@ type Shard struct {
 	players map[uint64]*Player
 	dirty   *store.DirtySet
 
-	// waiters 保存「玩家尚未加载完成」或「有 L0 写穿在途」期间到达的请求。
+	// waiters 放的是玩家还没加载完、或者有 L0 在途时到达的请求
 	waiters map[uint64][]*bus.Msg
 	loading map[uint64]bool
 
@@ -67,7 +56,6 @@ type Shard struct {
 	closed bool
 }
 
-// NewShard 构造分片状态。
 func NewShard(o shard.Ownership, svc *shardsvc.Service, lob *Service) *Shard {
 	return &Shard{
 		o:       o,
@@ -80,10 +68,7 @@ func NewShard(o shard.Ownership, svc *shardsvc.Service, lob *Service) *Shard {
 	}
 }
 
-// Init 初始化分片。
-//
-// 玩家数据是懒加载的（§10.1），这里不预热任何玩家，
-// 只把各级刷盘的首次触发时刻按分片号打散（§6.3）。
+// Init 初始化分片。玩家是懒加载的，这里不预热，只把各级刷盘的首次触发错开
 func (s *Shard) Init(ctx context.Context, o shard.Ownership) error {
 	now := time.Now()
 	cfg := s.lob.node.Cfg
@@ -96,13 +81,11 @@ func (s *Shard) Init(ctx context.Context, o shard.Ownership) error {
 	return nil
 }
 
-// Epoch 返回分片 epoch。
 func (s *Shard) Epoch() int64 { return s.o.Epoch }
 
-// ID 返回分片号。
 func (s *Shard) ID() uint32 { return s.o.Shard }
 
-// Handle 处理一条请求。所有业务逻辑都在这条 goroutine 上串行执行。
+// Handle 处理一条请求，业务逻辑都在这条 goroutine 上串行跑
 func (s *Shard) Handle(m *bus.Msg) {
 	if s.closed {
 		_ = m.RespondErr(protocol.ErrUnavailable, "分片正在关闭，请重试")
@@ -112,12 +95,8 @@ func (s *Shard) Handle(m *bus.Msg) {
 	cmd := m.Cmd()
 	uid := m.Env.GetUid()
 
-	// 第二道鉴权（评审 P0-1）。
-	//
-	// 网关已经按 Cmd.Level() 挡过一次，这里再验一次签名，理由是「不信任网关」：
-	// 网关配置写错、或有人直接连上内网 NATS，这一关仍然拦得住。
-	// fromClient 判定依据是发送方 nodeID —— 网关签不出内部签名，
-	// 所以即便它谎称自己不是网关，签名校验一样过不了。
+	// 第二道鉴权。网关已经按 Cmd.Level() 挡过一次，这里再验签名是为了防网关配错，
+	// 也防有人直接连内网 NATS。网关签不出内部签名，谎报身份也没用
 	fromClient := isGatewayNode(m.Env.GetFromNode())
 	if err := s.lob.signer.Verify(m.Env, fromClient); err != nil {
 		metrics.AuthzRejected.WithLabelValues(cmd.Name(), "verify").Inc()
@@ -127,7 +106,7 @@ func (s *Shard) Handle(m *bus.Msg) {
 		return
 	}
 
-	// 不需要玩家对象的命令先处理掉。
+	// 不需要玩家对象的命令先处理掉
 	switch cmd {
 	case protocol.CmdGetProfile:
 		s.handleGetProfile(m)
@@ -142,7 +121,7 @@ func (s *Shard) Handle(m *bus.Msg) {
 		return
 	}
 	if got := s.lob.ShardOf(uid); got != s.o.Shard {
-		// 路由错了。正常情况下 subject 已经保证不会发生，出现即是 bug。
+		// 路由错了。subject 本该保证不会走到这，出现就是 bug
 		logx.Error("请求路由到了错误的分片", "uid", uid, "want", got, "got", s.o.Shard, "cmd", cmd)
 		_ = m.RespondErr(protocol.ErrBadRequest, "分片路由错误")
 		return
@@ -150,12 +129,12 @@ func (s *Shard) Handle(m *bus.Msg) {
 
 	p := s.acquire(uid, m)
 	if p == nil {
-		return // 已排队等待加载 / 写穿完成
+		return // 已经排队了，等加载或提交完成
 	}
 	s.dispatch(p, m)
 }
 
-// dispatch 把请求分发到具体处理函数。
+// dispatch 把请求分发到具体处理函数
 func (s *Shard) dispatch(p *Player, m *bus.Msg) {
 	p.LastActive = time.Now()
 
@@ -228,18 +207,17 @@ func (s *Shard) dispatch(p *Player, m *bus.Msg) {
 // 玩家加载 / 排队
 // ---------------------------------------------------------------------------
 
-// acquire 取得可用的玩家对象。
+// acquire 拿到可用的玩家对象
 //
-// 返回 nil 表示请求已被排队：玩家正在加载，或有 L0 写穿在途。
-// 这样既不阻塞 Actor goroutine（§4.4），又能兑现 L0 的「落盘成功才改内存」语义。
+// 返回 nil 表示请求被排队了：玩家正在加载，或者有 L0 在途。
+// 这样既不阻塞 Actor，又能保证落盘成功之后才改内存
 func (s *Shard) acquire(uid uint64, m *bus.Msg) *Player {
 	p, ok := s.players[uid]
 	if ok && !p.busy && len(s.waiters[uid]) == 0 {
 		return p
 	}
 	if ok {
-		// 已经有排队的请求就必须跟着排：
-		// 同一玩家的请求顺序是业务语义的一部分（先用道具再看背包，不能反过来）。
+		// 已经有人在排队就得跟着排，同一玩家的请求顺序是业务语义的一部分
 		s.enqueue(uid, m)
 		return nil
 	}
@@ -262,10 +240,9 @@ func (s *Shard) enqueue(uid uint64, m *bus.Msg) {
 	s.waiters[uid] = append(q, m)
 }
 
-// startLoad 异步加载玩家数据。
+// startLoad 异步加载玩家数据
 //
-// 「登录时由所属 Lobby 分片 pipeline 读回全部模块 key」（§10.1）。
-// IO 在独立 goroutine 上做，完成后把结果投递回 Actor —— 绝不在 Actor 内阻塞。
+// IO 放独立 goroutine，读完再把结果投回 Actor，绝不在 Actor 里等 Redis
 func (s *Shard) startLoad(uid uint64) {
 	epoch := s.o.Epoch
 	sh := s.o.Shard
@@ -287,7 +264,7 @@ func (s *Shard) onLoaded(uid uint64, epoch int64, blobs map[store.Module][]byte,
 	delete(s.loading, uid)
 
 	if epoch != s.o.Epoch {
-		// 加载期间分片被接管又拿回来了（epoch 变了），这批数据不可信，丢弃重来。
+		// 加载期间分片被接管过又拿回来了，这批数据不可信，丢掉重来
 		s.failWaiters(uid, protocol.ErrUnavailable, "分片已变更，请重试")
 		return
 	}
@@ -300,7 +277,7 @@ func (s *Shard) onLoaded(uid uint64, epoch int64, blobs map[store.Module][]byte,
 	now := time.Now()
 	p, perr := FromBlobs(uid, blobs, now)
 	if perr != nil {
-		// 反序列化失败绝不能用空对象顶上 —— 那等于清档。
+		// 反序列化失败不能拿空对象顶上，那等于清空存档
 		logx.Error("玩家数据反序列化失败，拒绝服务该玩家（告警）",
 			"uid", uid, "shard", s.o.Shard, "err", perr)
 		s.failWaiters(uid, protocol.ErrInternal, "玩家数据损坏")
@@ -312,7 +289,7 @@ func (s *Shard) onLoaded(uid uint64, epoch int64, blobs map[store.Module][]byte,
 	metrics.PlayersResident.Inc()
 
 	if isNew {
-		// 新玩家：首次落盘要把全部模块写下去。
+		// 新玩家第一次落盘要把全部模块都写下去
 		s.dirty.MarkAll(uid)
 		logx.Info("创建新玩家", "uid", uid, "shard", s.o.Shard)
 	}
@@ -320,7 +297,7 @@ func (s *Shard) onLoaded(uid uint64, epoch int64, blobs map[store.Module][]byte,
 	s.drainWaiters(uid)
 }
 
-// drainWaiters 把排队的请求依次执行。
+// drainWaiters 把排队的请求挨个执行
 func (s *Shard) drainWaiters(uid uint64) {
 	for {
 		q := s.waiters[uid]
@@ -330,7 +307,7 @@ func (s *Shard) drainWaiters(uid uint64) {
 		}
 		p, ok := s.players[uid]
 		if !ok || p.busy {
-			return // 又进入忙碌状态，剩下的继续等
+			return // 又忙起来了，剩下的接着等
 		}
 		m := q[0]
 		s.waiters[uid] = q[1:]
@@ -349,14 +326,13 @@ func (s *Shard) failWaiters(uid uint64, code protocol.ErrCode, format string, ar
 // 脏标记 / 刷盘
 // ---------------------------------------------------------------------------
 
-// mark 标记玩家某模块为脏。
 func (s *Shard) mark(uid uint64, mods ...store.Module) {
 	for _, m := range mods {
 		s.dirty.Mark(uid, m)
 	}
 }
 
-// Tick 周期回调：分级刷盘、卸载检查、PENDING 转移补偿。
+// Tick 周期回调，管分级刷盘、卸载检查和转移补偿
 func (s *Shard) Tick(now time.Time) {
 	if s.closed {
 		return
@@ -378,14 +354,14 @@ func (s *Shard) Tick(now time.Time) {
 	if now.After(s.nextTxScan) {
 		s.nextTxScan = now.Add(cfg.TxScanInterval)
 		s.lob.scanPendingTx(s.o.Shard)
-		// 奖池派彩的补偿扫描：只让 0 号分片的 owner 做，避免每个分片都扫一遍。
+		// 奖池派彩的补偿扫描交给 0 号分片的 owner，不用每个分片都扫
 		if s.o.Shard == 0 {
 			s.lob.scanJackpotPayouts()
 		}
 	}
 }
 
-// flushLevel 取出该级别的脏数据，在 Actor 内序列化，然后甩给 IO pool（§6.3）。
+// flushLevel 取出这一级的脏数据，在 Actor 里序列化完甩给 IO pool
 func (s *Shard) flushLevel(level store.Level) {
 	items := s.dirty.Take(level, s.lob.node.Cfg.FlushBatchSize)
 	if len(items) == 0 {
@@ -396,12 +372,12 @@ func (s *Shard) flushLevel(level store.Level) {
 		return
 	}
 	if err := s.svc.Flusher().Submit(batch); err != nil {
-		// flushCh 满：重新标脏，绝不阻塞 Actor（§6.3）。
+		// flushCh 满了就重新标脏，不能阻塞 Actor
 		s.dirty.ReMark(batch.Entities)
 	}
 }
 
-// buildBatch 在 Actor goroutine 内完成序列化 —— 读内存必须如此。
+// buildBatch 在 Actor goroutine 里序列化，读内存只能在这儿做
 func (s *Shard) buildBatch(level store.Level, items []store.Item) *store.Batch {
 	keys := s.lob.node.Keys
 	ents := make([]*store.Entity, 0, len(items))
@@ -409,7 +385,7 @@ func (s *Shard) buildBatch(level store.Level, items []store.Item) *store.Batch {
 	for _, it := range items {
 		p, ok := s.players[it.ID]
 		if !ok {
-			continue // 玩家已卸载，卸载时已做过最终刷盘
+			continue // 玩家已卸载，那会儿刷过了
 		}
 		kv, err := p.MarshalKeys(keys, it.Modules)
 		if err != nil {
@@ -423,7 +399,7 @@ func (s *Shard) buildBatch(level store.Level, items []store.Item) *store.Batch {
 			Modules: it.Modules,
 			DirtyAt: it.DirtyAt,
 		}
-		// base 变了就顺带刷新只读摘要（§6.5）。
+		// base 变了顺手把只读摘要也刷一下
 		if containsModule(it.Modules, store.ModBase) {
 			ent.Hash = profile.HashWrite(keys, p.Profile())
 		}
@@ -445,21 +421,20 @@ func containsModule(mods []store.Module, want store.Module) bool {
 	return false
 }
 
-// OnFlushResult 处理刷盘结果。
+// OnFlushResult 处理刷盘结果
 func (s *Shard) OnFlushResult(res *store.Result) {
 	if res == nil || s.closed {
 		return
 	}
 	if len(res.Failed) > 0 {
-		// 「刷盘失败重新标脏，绝不丢弃。内存仍是权威副本，
-		// Redis 不可用期间服务可继续」（§6.3）。
+		// 失败的重新标脏。内存还是权威副本，Redis 挂着也能继续服务
 		s.dirty.ReMark(res.Failed)
 	}
 }
 
-// unloadIdle 卸载下线超时的玩家（§10.1）。
+// unloadIdle 卸载下线太久的玩家
 //
-// 下线后保留 5~10 分钟（断线重连、离线结算、好友查看），超时后最终刷盘并删除。
+// 下线后留 5~10 分钟给断线重连、离线结算和好友查看，超时了刷完盘就删
 func (s *Shard) unloadIdle(now time.Time) {
 	idle := s.lob.node.Cfg.UnloadIdle
 	var victims []uint64
@@ -500,7 +475,7 @@ func (s *Shard) unloadIdle(now time.Time) {
 	if len(ents) > 0 {
 		batch := &store.Batch{Shard: s.o.Shard, Epoch: s.o.Epoch, Level: store.L1, Entities: ents}
 		if err := s.svc.Flusher().Submit(batch); err != nil {
-			// 提交不进去就别卸载：内存是权威副本，丢了就真丢了。
+			// 提交不进去就别卸载，内存是权威副本，丢了就真丢了
 			s.dirty.ReMark(batch.Entities)
 			return
 		}
@@ -514,7 +489,7 @@ func (s *Shard) unloadIdle(now time.Time) {
 	logx.Debug("卸载空闲玩家", "shard", s.o.Shard, "count", len(unloaded), "resident", len(s.players))
 }
 
-// FlushAllSync 全量同步刷盘，用于交接与优雅下线。
+// FlushAllSync 全量同步刷盘，交接和下线时用
 func (s *Shard) FlushAllSync(ctx context.Context) error {
 	items := s.dirty.TakeAll()
 	if len(items) == 0 {
@@ -543,13 +518,12 @@ func (s *Shard) FlushAllSync(ctx context.Context) error {
 	return nil
 }
 
-// Close 分片被释放。
 func (s *Shard) Close(reason shard.ReleaseReason) {
 	s.closed = true
 
 	switch reason {
 	case shard.ReleaseGraceful:
-		// 主动交接 / 优雅下线：必须全量刷盘。
+		// 主动交接或下线，必须全量刷盘
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 		if err := s.FlushAllSync(ctx); err != nil {
 			logx.Error("释放分片时全量刷盘失败（告警：可能丢数据）",
@@ -558,8 +532,7 @@ func (s *Shard) Close(reason shard.ReleaseReason) {
 		cancel()
 
 	case shard.ReleaseFenced, shard.ReleaseLeaseLost:
-		// 「旧 owner 收到拒绝 → 丢弃该分片内存、停止服务、告警。绝不重试」（§7.2）。
-		// 此刻内存已过期，任何写入都只会加重损坏。
+		// 内存已经过期了，这时候写什么都只会更糟
 		logx.Error("分片失去所有权，直接丢弃内存，不做任何写入（告警）",
 			"shard", s.o.Shard, "epoch", s.o.Epoch, "reason", reason,
 			"players", len(s.players), "dirty", s.dirty.Len())
@@ -568,7 +541,7 @@ func (s *Shard) Close(reason shard.ReleaseReason) {
 		logx.Warn("分片初始化失败，清理内存", "shard", s.o.Shard)
 	}
 
-	// 排队中的请求要回错，别让客户端干等到超时。
+	// 排队的请求给个错，别让客户端干等超时
 	for uid, q := range s.waiters {
 		for _, m := range q {
 			_ = m.RespondErr(protocol.ErrUnavailable, "分片正在交接，请重试")
@@ -585,27 +558,26 @@ func (s *Shard) Close(reason shard.ReleaseReason) {
 // L0 写穿
 // ---------------------------------------------------------------------------
 
-// CommitSpec 描述一次资金类提交。
+// CommitSpec 描述一次资金类提交
 //
-// 调用约定（很重要）：改动先算在**副本**上，序列化进 KV，提交成功后才换进内存。
-// 这样兑现了 §6.2 的「同步落 Redis 成功后才改内存回包」，
-// 同时保证「余额 + 流水 + 回合 + 限额」要么全成，要么全不成。
+// 用法：改动先算在副本上，序列化进 KV，提交成功之后才换进内存。
+// 这样余额、流水、回合、限额要么全成要么全不成
 type CommitSpec struct {
-	// IdemKey 为空表示不做幂等。资金操作原则上都该有幂等键。
+	// IdemKey 为空就不做幂等。资金操作原则上都该有
 	IdemKey string
 	Payload []byte
 	Entries []*ledger.Entry
 	KV      map[string][]byte
-	// Op 用于指标打标。
+	// Op 给指标打标用
 	Op string
 }
 
-// commitDone 是提交完成后的回调，在 Actor goroutine 内执行。
+// commitDone 提交完成后的回调，在 Actor goroutine 内执行
 type commitDone func(res *store.CommitResult, err error)
 
-// commit 执行一次带幂等与流水的原子提交（L0）。
+// commit 做一次带幂等和流水的原子提交
 //
-// 期间玩家被标记 busy，其余请求排队 —— 这是「Redis 未确认前内存不变」的实现方式。
+// 期间玩家标记为 busy，其他请求排队，Redis 没确认前内存就不动
 func (s *Shard) commit(p *Player, spec CommitSpec, done commitDone) {
 	entries, err := ledger.Encode(spec.Entries)
 	if err != nil {
@@ -652,7 +624,7 @@ func (s *Shard) commit(p *Player, spec CommitSpec, done commitDone) {
 			}
 			done(res, cerr)
 			if errors.Is(cerr, store.ErrFenced) {
-				// 提交被 fencing 拒绝：整个分片都已过期，丢弃内存并停止服务。
+				// 被 fencing 拒了，整个分片都过期了，丢内存停服务
 				s.svc.Claimer().Fence(sh)
 				return
 			}
@@ -661,12 +633,11 @@ func (s *Shard) commit(p *Player, spec CommitSpec, done commitDone) {
 	}()
 }
 
-// writeThroughDone 是写穿完成后的回调，在 Actor goroutine 内执行。
+// writeThroughDone 写穿完成后的回调，在 Actor goroutine 内执行
 type writeThroughDone func(res *store.WriteThroughResult, err error)
 
-// writeThrough 是不带流水的 L0 写穿，仅用于非资金类的幂等操作。
-//
-// 资金类一律走 commit：没有流水的资金变动是查不清的（评审 P1-2）。
+// writeThrough 不带流水的 L0 写穿，只给非资金类的幂等操作用。
+// 资金类一律走 commit，没流水的资金变动事后查不清
 func (s *Shard) writeThrough(p *Player, orderKey string, payload []byte,
 	kv map[string][]byte, done writeThroughDone) {
 
@@ -700,18 +671,14 @@ func (s *Shard) writeThrough(p *Player, orderKey string, payload []byte,
 	}()
 }
 
-// kvOf 把玩家的若干模块序列化成提交用的 key→value。
-//
-// 必须在 Actor goroutine 内调用（读内存），这是 §6.3 的硬要求。
+// kvOf 把几个模块序列化成提交要的 key→value，只能在 Actor goroutine 里调
 func (s *Shard) kvOf(p *Player, mods ...store.Module) (map[string][]byte, error) {
 	return p.MarshalKeys(s.lob.node.Keys, mods)
 }
 
-// appendLedger 追加一条流水到异步刷盘路径。
+// appendLedger 异步补一条流水，只给非关键路径用（比如内部发放）
 //
-// 只用于「非资金关键路径」的补记（例如内部发放的货币变动）：
-// 资金关键路径（下注、充值、派彩）必须走 commit，与余额同一个 Lua 原子写入。
-// 这里的写入是 best-effort 的，失败会记日志。
+// 下注、充值、派彩这些必须走 commit，和余额进同一个 Lua。这里失败只记日志
 func (s *Shard) appendLedger(p *Player, e *ledger.Entry) {
 	blob, err := e.JSON()
 	if err != nil {
@@ -734,9 +701,7 @@ func (s *Shard) appendLedger(p *Player, e *ledger.Entry) {
 	}()
 }
 
-// appendItemLedger 记录道具类资产变动。
-//
-// 道具没有「余额」概念，因此 amount/balance 留 0，数量记在 ref 里。
+// appendItemLedger 记道具变动。道具没有余额概念，amount 和 balance 留 0，数量写 ref
 func (s *Shard) appendItemLedger(p *Player, t ledger.Type, tpl uint32, count int64, reason string) {
 	s.appendLedger(p, s.entry(p.UID, t, 0, 0, 0).
 		WithRef(fmt.Sprintf("tpl=%d;count=%d;reason=%s", tpl, count, reason)))

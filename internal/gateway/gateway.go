@@ -23,14 +23,13 @@ import (
 	"github.com/gamedev/f1/pkg/subject"
 )
 
-// Service 是网关服务。
+// Service 网关
 type Service struct {
 	node     *node.Node
 	gateID   string
 	sessions *session.Store
 	cache    *session.Cache
-	// auth 校验登录票据（评审 P0-3）。
-	auth *authn.Verifier
+	auth     *authn.Verifier // auth 验登录token
 
 	ln   net.Listener
 	subs []*nats.Subscription
@@ -46,31 +45,32 @@ type Service struct {
 	rateQPS   int
 	rateBurst int
 
-	// reqTimeout 是转发到后端的超时。分片交接窗口内会拿到 ErrNoResponders 或超时，
-	// 网关据此做有限次重投，兑现 §10.2 对「客户端必须重试」的兜底。
-	reqTimeout time.Duration
-	retryMax   int
-	retryWait  time.Duration
+	reqTimeout time.Duration // 转发到后端的超时
+	// authTimeout 换票据的超时，比 reqTimeout 长
+	//
+	// 这条路径尽头是外部渠道，账号服自己还留了重试和熔断的余量，
+	// 按 3 秒掐会把本该成功的登录切掉
+	authTimeout time.Duration
+	retryMax    int
+	retryWait   time.Duration
 }
 
-// New 构造网关。
 func New() *Service {
 	return &Service{
-		quit:       make(chan struct{}),
-		conns:      make(map[uint64]*Conn),
-		byUID:      make(map[uint64]*Conn),
-		rateQPS:    100,
-		rateBurst:  200,
-		reqTimeout: 3 * time.Second,
-		retryMax:   2,
-		retryWait:  250 * time.Millisecond,
+		quit:        make(chan struct{}),
+		conns:       make(map[uint64]*Conn),
+		byUID:       make(map[uint64]*Conn),
+		rateQPS:     100,
+		rateBurst:   200,
+		reqTimeout:  3 * time.Second,
+		authTimeout: 12 * time.Second,
+		retryMax:    2,
+		retryWait:   250 * time.Millisecond,
 	}
 }
 
-// Name 实现 node.Service。
 func (s *Service) Name() string { return "gateway" }
 
-// Start 启动网关。
 func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.node = n
 	s.gateID = n.NodeID()
@@ -86,19 +86,19 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 			"仅限本地开发；生产必须配置 LOGIN_SECRET")
 	default:
 		// 既没有密钥又没显式开发模式：所有登录都会被拒绝。
-		// 这是有意的默认拒绝 —— 「忘了配密钥」不能变成「谁都能登录」。
+		// 这是有意的默认拒绝，「忘了配密钥」不能变成「谁都能登录」
 		logx.Error("未配置 LOGIN_SECRET 且未开启 ALLOW_DEV_AUTH：所有登录都会被拒绝")
 	}
 
-	// §9.4：启动时清理自己 gateID 名下所有 session。
-	// 崩溃重启后 Redis 里会残留指向本网关的脏路由，不清会让推送发到黑洞。
+	// 清掉自己名下的残留会话。崩溃重启后 Redis 里会留着指向本网关的脏路由，
+	// 不清理推送就发进黑洞了
 	cctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	if _, err := s.sessions.CleanGate(cctx, s.gateID); err != nil {
 		logx.Warn("清理历史会话失败（不阻断启动）", "gate", s.gateID, "err", err)
 	}
 	cancel()
 
-	// 只订两个 subject：订阅数恒定，与在线人数无关（§9.1）。
+	// 只订两个 subject，订阅数不随在线人数变
 	sub, err := n.Bus.Subscribe(subject.GatePush(s.gateID), s.onPush)
 	if err != nil {
 		return fmt.Errorf("订阅定向推送失败: %w", err)
@@ -111,7 +111,7 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	}
 	s.subs = append(s.subs, sub)
 
-	// 顶号等会话变更要让本地缓存失效（§9.1）。
+	// 顶号之类的会话变更要让本地缓存失效
 	sub, err = n.Bus.Subscribe(subject.SessionChangedEvt, func(m *bus.Msg) {
 		s.cache.Invalidate(m.Env.GetUid())
 	})
@@ -158,8 +158,7 @@ func (s *Service) acceptLoop() {
 			_ = tcp.SetKeepAlivePeriod(30 * time.Second)
 		}
 
-		// connID 用雪花而不是自增：网关重启后自增会从头开始，
-		// 可能与 Redis 里残留的 session.conn_id 撞上，导致误判「还是同一条连接」。
+		// 不要用自增，防止重启后生成相同 ID
 		id, err := s.node.NextID()
 		if err != nil {
 			logx.Error("生成 connID 失败，拒绝连接", "err", err)
@@ -184,7 +183,7 @@ func (s *Service) acceptLoop() {
 	}
 }
 
-// heartbeatLoop 周期性续期在线玩家的 session TTL（§9.1）。
+// heartbeatLoop 定期给在线玩家的会话续期
 func (s *Service) heartbeatLoop() {
 	defer s.wg.Done()
 	interval := s.node.Cfg.SessionTTL / 3
@@ -226,7 +225,7 @@ func (s *Service) touchAll() {
 			continue
 		}
 		if !ok {
-			// 会话已被别人接管（顶号），这条连接该断了。
+			// 会话被别人接管了（顶号），这条连接该断
 			logx.Info("会话已不属于本连接，断开", "uid", uid, "conn", c.ID)
 			c.SendPush(protocol.PushKick, nil, "")
 			c.drainOut(500 * time.Millisecond)
@@ -240,7 +239,7 @@ func (s *Service) touchAll() {
 // 下行推送
 // ---------------------------------------------------------------------------
 
-// onPush 处理 push.gate.{gateID}：一条消息可能带多个 uid（§9.3 聚合推送）。
+// onPush 处理定向推送，一条消息可能带多个 uid
 func (s *Service) onPush(m *bus.Msg) {
 	var mp pb.MultiPush
 	if err := bus.Unpack(m.Env, &mp); err != nil {
@@ -257,17 +256,34 @@ func (s *Service) onPush(m *bus.Msg) {
 		uids = []uint64{m.Env.GetUid()}
 	}
 
+	// KICK 要认连接，不能只认 uid
+	//
+	// 玩家在网关之间来回跳时，KICK 绕一圈回来，byUID 里可能已经换成了
+	// 更新的那条连接，照着 uid 踢会把刚登录成功的人踢掉
+	var kickConn uint64
+	if push == protocol.PushKick {
+		var kn pb.KickNotify
+		if err := proto.Unmarshal(mp.GetPayload(), &kn); err == nil {
+			kickConn = kn.GetConnId()
+		}
+	}
+
 	for _, uid := range uids {
 		s.mu.RLock()
 		c := s.byUID[uid]
 		s.mu.RUnlock()
 		if c == nil {
-			continue // 玩家已不在本网关：路由表滞后，丢弃即可
+			continue // 玩家不在本网关了，路由表滞后，丢掉就行
+		}
+		if kickConn != 0 && c.ID != kickConn {
+			logx.Trace(m.Env.GetTraceId()).Info("KICK 指向的连接已经不在了，忽略",
+				"uid", uid, "kick_conn", kickConn, "current_conn", c.ID)
+			continue
 		}
 		c.SendPush(push, mp.GetPayload(), m.Env.GetTraceId())
 
 		if push == protocol.PushKick {
-			// 顶号：发完 KICK 再断开，让客户端能显示提示。
+			// 发完 KICK 再断，让客户端有机会弹提示
 			go func(c *Conn) {
 				c.drainOut(500 * time.Millisecond)
 				c.Close()
@@ -276,7 +292,7 @@ func (s *Service) onPush(m *bus.Msg) {
 	}
 }
 
-// onBroadcast 处理 push.broadcast：全服公告。
+// onBroadcast 处理全服公告
 func (s *Service) onBroadcast(m *bus.Msg) {
 	var mp pb.MultiPush
 	if err := bus.Unpack(m.Env, &mp); err != nil {
@@ -324,13 +340,13 @@ func (s *Service) onDisconnect(c *Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// 只有仍指向本连接时才解绑 —— 顶号后旧连接的断开不能删掉新会话。
+	// 只有还指向本连接时才解绑，顶号后旧连接断开不能删掉新会话
 	if _, err := s.sessions.Unbind(ctx, uid, s.gateID, c.ID); err != nil {
 		logx.Warn("解绑会话失败", "uid", uid, "err", err)
 	}
 	s.publishSessionChanged(uid)
 
-	// 通知 Lobby 玩家下线。下线后玩家对象仍保留 5~10 分钟（§10.1）。
+	// 告诉 Lobby 玩家下线了，对象还会留几分钟
 	sh := shard.Of(uid, s.node.Cfg.ShardCount)
 	fctx, fcancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer fcancel()
@@ -351,12 +367,10 @@ func (s *Service) publishSessionChanged(uid uint64) {
 }
 
 // ---------------------------------------------------------------------------
-// 停机（§10.3）
+// 停机
 // ---------------------------------------------------------------------------
 
-// NotifyClients 先向客户端发「服务器维护，请重连」。
-//
-// 让客户端主动重连到其他网关，体验远好于直接断开（§10.3）。
+// NotifyClients 先告诉客户端去重连别的网关，比直接断开体验好
 func (s *Service) NotifyClients(ctx context.Context) {
 	s.mu.RLock()
 	list := make([]*Conn, 0, len(s.conns))
@@ -377,14 +391,14 @@ func (s *Service) NotifyClients(ctx context.Context) {
 	for _, c := range list {
 		c.SendPush(protocol.PushMaintenance, payload, "")
 	}
-	// 给客户端一点时间收包并发起重连。
+	// 给客户端一点时间收包再重连
 	deadline := time.Now().Add(2 * time.Second)
 	for _, c := range list {
 		c.drainOut(time.Until(deadline))
 	}
 }
 
-// StopAccepting 停止接受新连接。
+// StopAccepting 停止接受新连接
 func (s *Service) StopAccepting(ctx context.Context) {
 	s.once.Do(func() { close(s.quit) })
 
@@ -400,8 +414,8 @@ func (s *Service) StopAccepting(ctx context.Context) {
 	}
 }
 
-// FlushAll 网关不持有数据；这里做的是清理自己名下的会话路由，
-// 让玩家能立刻重连到其他网关，而不用等 session TTL 过期（§9.4）。
+// FlushAll 网关没数据可刷，这里清掉自己名下的会话路由，
+// 让玩家能马上连别的网关，不用等 TTL 到期
 func (s *Service) FlushAll(ctx context.Context) error {
 	s.mu.RLock()
 	list := make([]*Conn, 0, len(s.byUID))
@@ -423,7 +437,6 @@ func (s *Service) FlushAll(ctx context.Context) error {
 	return nil
 }
 
-// Close 关闭全部连接。
 func (s *Service) Close(ctx context.Context) {
 	s.mu.Lock()
 	list := make([]*Conn, 0, len(s.conns))

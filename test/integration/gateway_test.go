@@ -26,7 +26,7 @@ import (
 	"github.com/gamedev/f1/test/harness"
 )
 
-// client 是一个最小客户端，帧格式与 gateway 一致：[4 字节大端长度][Envelope]。
+// client 个最小客户端，帧格式跟 gateway 一致：4 字节大端长度加 Envelope
 type client struct {
 	conn net.Conn
 	t    *testing.T
@@ -81,7 +81,7 @@ func (c *client) recv(timeout time.Duration) (*pb.Envelope, error) {
 	return env, nil
 }
 
-// recvCmd 一直读到指定 cmd 为止（跳过中途的推送）。
+// recvCmd 一直读到指定的 cmd，中途的推送跳过
 func (c *client) recvCmd(cmd uint32, timeout time.Duration) (*pb.Envelope, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -127,7 +127,7 @@ func freeAddr(t *testing.T) string {
 	return l.Addr().String()
 }
 
-// 端到端：客户端连网关 → 登录 → 会话落 Redis → 业务请求被路由到 Lobby 分片。
+// 端到端：连网关、登录、会话落 Redis，再发个业务请求看路由对不对
 func TestGatewayLoginRoutesToLobby(t *testing.T) {
 	env := harness.Start(t)
 	_, lsvc := startLobby(t, env, 1)
@@ -154,7 +154,7 @@ func TestGatewayLoginRoutesToLobby(t *testing.T) {
 		t.Fatalf("登录返回的玩家不对: %+v", lr.GetBase())
 	}
 
-	// §9.1：会话路由表落在 Redis。
+	// 会话路由表落在 Redis 里
 	sessions := session.NewStore(gn.Redis, gn.Keys, gn.Cfg.SessionTTL)
 	ctx := context.Background()
 	info, err := sessions.Get(ctx, uid)
@@ -165,7 +165,7 @@ func TestGatewayLoginRoutesToLobby(t *testing.T) {
 		t.Fatalf("会话指向的网关不对: %q", info.GateID)
 	}
 
-	// 后续业务请求应被网关按 uid 路由到正确的 Lobby 分片。
+	// 后续业务请求应被网关按 uid 路由到正确的 Lobby 分片
 	c.send(protocol.CmdGetBag, uid, &pb.GetBagReq{})
 	got, err := c.recvCmd(uint32(protocol.CmdGetBag), 10*time.Second)
 	if err != nil {
@@ -183,10 +183,9 @@ func TestGatewayLoginRoutesToLobby(t *testing.T) {
 	}
 }
 
-// 评审 P0-1 的回归测试：客户端绝不能调用内部命令。
+// 客户端绝不能调用内部命令
 //
-// 这曾经是一个真实存在的送钱漏洞 —— add_currency 在网关白名单里，
-// 处理函数又不校验来源，任何人构造一个请求就能凭空造币。
+// 这里曾经有个送钱漏洞：add_currency 在网关白名单里，处理函数又不看来源
 func TestClientCannotCallInternalCommands(t *testing.T) {
 	env := harness.Start(t)
 	_, lsvc := startLobby(t, env, 1)
@@ -225,13 +224,13 @@ func TestClientCannotCallInternalCommands(t *testing.T) {
 		}
 	}
 
-	// 确认真的没到账。
+	// 确认真的没到账
 	if gold := goldOf(t, env.Node(t, "lobby", "lobby", 9, lobbyCfg), uid); gold != 0 {
 		t.Fatalf("被拒绝的命令不应产生任何余额变动，实际金币 = %d", gold)
 	}
 }
 
-// 伪造的内部签名必须被识破。
+// 伪造的内部签名要被识破
 func TestForgedInternalSignatureRejected(t *testing.T) {
 	env := harness.Start(t)
 	n, lsvc := startLobby(t, env, 1)
@@ -246,14 +245,14 @@ func TestForgedInternalSignatureRejected(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 用错误的密钥签名。
+	// 用错误的密钥签名
 	bad := authz.NewSigner("wrong-secret")
 	if err := bad.Sign(e); err != nil {
 		t.Fatal(err)
 	}
 
-	// 分片刚认领时订阅可能还没起来，重试到拿得到应答为止 ——
-	// 这里要断言的是「签名被拒」，不能被交接窗口的 no-responders 掩盖。
+	// 分片刚认领时订阅可能还没起来，重试到拿得到应答为止。
+	// 这里要断言的是「签名被拒」，不能被交接窗口的 no-responders 掩盖
 	var resp *pb.Envelope
 	for attempt := 0; attempt < 20; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -264,7 +263,7 @@ func TestForgedInternalSignatureRejected(t *testing.T) {
 			break
 		}
 		time.Sleep(200 * time.Millisecond)
-		// 重发要刷新时间戳，否则会先撞上防重放的时效检查。
+		// 重发要刷新时间戳，否则会先撞上防重放的时效检查
 		e.TsMs = time.Now().UnixMilli()
 		_ = bad.Sign(e)
 	}
@@ -276,7 +275,7 @@ func TestForgedInternalSignatureRejected(t *testing.T) {
 	}
 }
 
-// 无签名的内部命令同样必须被拒绝（即便直连内网 NATS）。
+// 没签名的内部命令一样要被拒，哪怕是直连内网 NATS 发的
 func TestUnsignedInternalCommandRejected(t *testing.T) {
 	env := harness.Start(t)
 	n, lsvc := startLobby(t, env, 1)
@@ -286,8 +285,8 @@ func TestUnsignedInternalCommandRejected(t *testing.T) {
 
 	sh := shard.Of(uid, n.Cfg.ShardCount)
 
-	// 必须明确断言是「无权限」，而不是「没人应答」——
-	// 后者也会返回 error，但那不能证明鉴权起了作用。
+	// 必须明确断言是「无权限」，而不是「没人应答」。
+	// 后者也会返回 error，但那不能证明鉴权起了作用
 	var remote *bus.RemoteError
 	for attempt := 0; attempt < 20; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -310,7 +309,7 @@ func TestUnsignedInternalCommandRejected(t *testing.T) {
 	}
 }
 
-// 无效登录票据必须被拒绝（评审 P0-3）。
+// 无效的登录票据要被拒
 func TestInvalidLoginTokenRejected(t *testing.T) {
 	env := harness.Start(t)
 	_, _, addr := startGateway(t, env, 1)
@@ -339,7 +338,7 @@ func TestInvalidLoginTokenRejected(t *testing.T) {
 	}
 }
 
-// §9.2 顶号：Lua 原子替换 session，取出旧 gateID 后发 KICK。
+// 顶号：Lua 原子换 session，拿到旧 gateID 后发 KICK
 func TestGatewayKickOnDuplicateLogin(t *testing.T) {
 	env := harness.Start(t)
 	_, lsvc := startLobby(t, env, 1)
@@ -349,27 +348,27 @@ func TestGatewayKickOnDuplicateLogin(t *testing.T) {
 	const uid = uint64(8008)
 	harness.Eventually(t, 20*time.Second, "Lobby 认领分片", func() bool { return lsvc.Owns(uid) })
 
-	// 第一个设备登录到网关 1。
+	// 第一个设备登录到网关 1
 	c1 := dial(t, addr1)
 	c1.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 	if resp, err := c1.recvCmd(uint32(protocol.CmdLogin), 10*time.Second); err != nil || resp.GetErrCode() != 0 {
 		t.Fatalf("首次登录失败: %v", err)
 	}
 
-	// 第二个设备登录到网关 2 —— 触发顶号。
+	// 第二个设备登录到网关 2，触发顶号
 	c2 := dial(t, addr2)
 	c2.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 	if resp, err := c2.recvCmd(uint32(protocol.CmdLogin), 10*time.Second); err != nil || resp.GetErrCode() != 0 {
 		t.Fatalf("第二次登录失败: %v", err)
 	}
 
-	// 旧连接应收到 KICK 并被断开。
+	// 旧连接应收到 KICK 并被断开
 	deadline := time.Now().Add(10 * time.Second)
 	kicked := false
 	for time.Now().Before(deadline) {
 		env, err := c1.recv(time.Until(deadline))
 		if err != nil {
-			// 连接被关闭同样说明顶号生效了。
+			// 连接被关闭同样说明顶号生效了
 			kicked = true
 			break
 		}
@@ -382,7 +381,7 @@ func TestGatewayKickOnDuplicateLogin(t *testing.T) {
 		t.Fatal("被顶号的连接必须收到 KICK 或被断开")
 	}
 
-	// 会话应指向新网关。
+	// 会话应指向新网关
 	sessions := session.NewStore(gn1.Redis, gn1.Keys, gn1.Cfg.SessionTTL)
 	info, err := sessions.Get(context.Background(), uid)
 	if err != nil {
@@ -393,7 +392,7 @@ func TestGatewayKickOnDuplicateLogin(t *testing.T) {
 	}
 }
 
-// §9.4：网关重启后必须清理自己名下的残留会话，否则推送会发进黑洞。
+// 网关重启后要清掉自己名下的残留会话，否则推送发进黑洞
 func TestGatewayCleansOwnSessionsOnStart(t *testing.T) {
 	env := harness.Start(t)
 	n := env.Node(t, "gateway", "lobby", 1, lobbyCfg)
@@ -402,7 +401,7 @@ func TestGatewayCleansOwnSessionsOnStart(t *testing.T) {
 	sessions := session.NewStore(n.Redis, keys, n.Cfg.SessionTTL)
 	ctx := context.Background()
 
-	// 伪造上一次崩溃留下的会话。
+	// 伪造上一次崩溃留下的会话
 	if _, err := sessions.Bind(ctx, 9009, n.NodeID(), 1); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +429,7 @@ func TestGatewayCleansOwnSessionsOnStart(t *testing.T) {
 	}
 }
 
-// 未登录就发业务请求必须被拒绝：uid 一律以服务端会话为准。
+// 没登录就发业务请求要被拒，uid 一律以服务端会话为准
 func TestGatewayRejectsUnauthenticated(t *testing.T) {
 	env := harness.Start(t)
 	_, _, addr := startGateway(t, env, 1)

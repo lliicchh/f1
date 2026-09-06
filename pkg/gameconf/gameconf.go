@@ -1,12 +1,7 @@
-// Package gameconf 是游戏配置表：加载、校验、内容哈希版本化。
+// Package gameconf 游戏配置表
 //
-// 评审 P1-3 的修复。原来 paytable、商品、经验曲线全是硬编码 switch，
-// 两个后果：调个数值要发版；更要命的是**历史回合无法复算** ——
-// 没人知道当时用的是哪一版配置，客服查单和监管抽查都无从下手。
-//
-// 版本号取配置内容的哈希，而不是人工维护的版本字段：
-// 人工版本号一定会有人忘了改，内容哈希不会。每个回合落盘时记下这个版本，
-// 复算时用同版本配置 + 同种子即可位对位重放。
+// 版本号取配置内容的 sha256 前缀，不用人工维护的字段，人工版本号总有人忘了改。
+// 每个回合落盘时记下版本，复算时才知道该用哪一版配置
 package gameconf
 
 import (
@@ -19,10 +14,10 @@ import (
 	"sync/atomic"
 )
 
-// Symbol 是 slots 的符号编号。
+// Symbol slots 的符号编号
 type Symbol uint32
 
-// Config 是一份完整的游戏配置。加载后只读，热更新走整体替换。
+// Config 一份完整的游戏配置。加载后只读，热更新走整体替换
 type Config struct {
 	Slots    map[string]*SlotMachine `json:"slots"`
 	Gacha    map[string]*GachaPool   `json:"gacha"`
@@ -36,56 +31,53 @@ type Config struct {
 	version string
 }
 
-// SlotMachine 是一台老虎机的完整数学模型。
+// SlotMachine 一台老虎机的数学模型
 //
-// RTP 由 Reels（符号分布）与 Paytable（赔付）共同决定，改任何一个都会移动 RTP。
-// TheoreticalRTP 是「设计意图」，由蒙特卡洛回归测试守着 ——
-// 改错一个 reel 符号可能让 RTP 从 96% 跳到 130%，那必须在 CI 挡住而不是上线后看报表。
+// RTP 由轴带和赔付表共同决定，改哪个都会挪动它。TheoreticalRTP 记的是设计值，
+// 由蒙特卡洛测试盯着，轴带改错一个符号，RTP 能从 96% 跳到 130%
 type SlotMachine struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 	Rows int    `json:"rows"`
 
-	// Reels[i] 是第 i 轴的符号带。每次旋转在每轴随机取一个停止位，
-	// 向下连取 Rows 个符号（环形）作为该轴可见区域。
+	// Reels[i] 是第 i 轴的符号带。每轴随机停一个位置，环形往下取 Rows 个作为可见区
 	Reels [][]Symbol `json:"reels"`
 
-	// Paylines[i][j] = 第 i 条线在第 j 轴上取第几行。
+	// Paylines[i][j] = 第 i 条线在第 j 轴上取第几行
 	Paylines [][]int `json:"paylines"`
 
-	// Paytable[symbol][k] = 连中 k+1 个的赔率，单位是「线注」的倍数。
+	// Paytable[symbol][k] 是连中 k+1 个的赔率，单位为线注倍数
 	Paytable map[Symbol][]int64 `json:"paytable"`
 
 	Wild    Symbol `json:"wild"`
 	Scatter Symbol `json:"scatter"`
 
-	// ScatterPays[k] = 出现 k+1 个 scatter 的赔率，单位是「总注」的倍数。
+	// ScatterPays[k] 是 k+1 个 scatter 的赔率，单位为总注倍数
 	ScatterPays []int64 `json:"scatter_pays"`
-	// FreeSpins[k] = 出现 k+1 个 scatter 授予的免费旋转次数。
+	// FreeSpins[k] = 出现 k+1 个 scatter 授予的免费旋转次数
 	FreeSpins []uint32 `json:"free_spins"`
-	// FreeSpinMultiplier 是免费旋转期间的派彩倍数。
+	// FreeSpinMultiplier 免费旋转期间的派彩倍数
 	FreeSpinMultiplier uint32 `json:"free_spin_multiplier"`
-	// FreeSpinRetrigger 允许免费旋转中再次触发免费旋转。
+	// FreeSpinRetrigger 允许免费旋转中再次触发免费旋转
 	FreeSpinRetrigger bool `json:"free_spin_retrigger"`
 
-	// BetLevels 是允许的总投注档位。不在档位里的下注一律拒绝 ——
-	// 任由客户端指定金额是另一种形式的造币。
+	// BetLevels 允许的投注档位，不在档位里的一律拒绝。
+	// 让客户端自定金额是另一种形式的造币
 	BetLevels []int64 `json:"bet_levels"`
 	Currency  uint32  `json:"currency"`
 
 	TheoreticalRTP float64 `json:"theoretical_rtp"`
 
-	// 奖池联动。
+	// 奖池联动
 	JackpotPool      string `json:"jackpot_pool"`
 	JackpotContribBP int64  `json:"jackpot_contrib_bp"` // 万分比，从每次投注中注入
 	JackpotChanceNum int64  `json:"jackpot_chance_num"` // 中奖概率分子
 	JackpotChanceDen int64  `json:"jackpot_chance_den"` // 中奖概率分母
 }
 
-// LineCount 返回中奖线数量。
 func (m *SlotMachine) LineCount() int { return len(m.Paylines) }
 
-// ValidBet 报告下注额是否在允许档位内。
+// ValidBet 报告下注额是否在允许档位内
 func (m *SlotMachine) ValidBet(bet int64) bool {
 	for _, b := range m.BetLevels {
 		if b == bet {
@@ -95,25 +87,24 @@ func (m *SlotMachine) ValidBet(bet int64) bool {
 	return false
 }
 
-// GachaPool 是一个卡池。
+// GachaPool 一个卡池
 type GachaPool struct {
 	ID       string       `json:"id"`
 	Cost     int64        `json:"cost"`
 	Currency uint32       `json:"currency"`
 	Entries  []GachaEntry `json:"entries"`
 
-	// PityTop 抽必出最高稀有度；PityHigh 抽必出高稀有度。
-	// 保底是抽卡的合规底线：概率公示了就必须与实现一致，
-	// 而没有保底的卡池在多数发行地已经不可过审。
+	// PityTop 抽必出最高稀有度，PityHigh 抽必出高稀有度。
+	// 概率一旦公示就得和实现一致，没保底的卡池多数发行地过不了审
 	PityTop    uint32 `json:"pity_top"`
 	PityHigh   uint32 `json:"pity_high"`
 	TopRarity  uint32 `json:"top_rarity"`
 	HighRarity uint32 `json:"high_rarity"`
-	// TenPullGuarantee 十连内保证至少一个高稀有度。
+	// TenPullGuarantee 十连内保证至少一个高稀有度
 	TenPullGuarantee bool `json:"ten_pull_guarantee"`
 }
 
-// GachaEntry 是卡池中的一项。
+// GachaEntry 卡池中的一项
 type GachaEntry struct {
 	TplID  uint32 `json:"tpl_id"`
 	Rarity uint32 `json:"rarity"`
@@ -121,7 +112,7 @@ type GachaEntry struct {
 	Count  int64  `json:"count"`
 }
 
-// Product 是一个充值商品。
+// Product 一个充值商品
 type Product struct {
 	ID         uint32   `json:"id"`
 	Currency   uint32   `json:"currency"`
@@ -130,7 +121,7 @@ type Product struct {
 	Channels   []string `json:"channels"`    // 允许的支付渠道
 }
 
-// AllowsChannel 报告某渠道是否可购买该商品。
+// AllowsChannel 报告某渠道是否可购买该商品
 func (p *Product) AllowsChannel(ch string) bool {
 	if len(p.Channels) == 0 {
 		return false
@@ -143,7 +134,7 @@ func (p *Product) AllowsChannel(ch string) bool {
 	return false
 }
 
-// ItemDef 是道具定义。
+// ItemDef 道具定义
 type ItemDef struct {
 	TplID     uint32 `json:"tpl_id"`
 	Name      string `json:"name"`
@@ -152,59 +143,56 @@ type ItemDef struct {
 	Rarity    uint32 `json:"rarity"`
 }
 
-// Jackpot 是奖池配置。
+// Jackpot 奖池配置
 type Jackpot struct {
 	ID       string `json:"id"`
 	Currency uint32 `json:"currency"`
 	Seed     int64  `json:"seed"` // 派彩后重置到的底注
 }
 
-// RGLimits 是责任游戏的默认限额。
-//
-// 玩家可以把自己的限额调得更严，但不能调得比这里更松。
+// RGLimits 责任游戏的默认限额。玩家能调得更严，不能调得更松
 type RGLimits struct {
 	DailyBetLimit  int64 `json:"daily_bet_limit"`
 	DailyLossLimit int64 `json:"daily_loss_limit"`
 	SessionLimit   int64 `json:"session_limit_seconds"`
-	// ResetOffsetMinutes 是结算日的时区偏移（分钟）。
-	// 必须显式配置：跨日重置发生在哪一刻，是限额能否被绕过的关键。
+	// ResetOffsetMinutes 结算日的时区偏移（分钟）。
+	// 得显式配：跨日重置发生在哪一刻，决定了日限额能不能被绕过
 	ResetOffsetMinutes int   `json:"reset_offset_minutes"`
 	NoticeInterval     int64 `json:"notice_interval_seconds"`
 }
 
-// BagConf 是背包配置。
+// BagConf 背包配置
 type BagConf struct {
 	Capacity uint32 `json:"capacity"`
 }
 
-// Version 返回配置内容哈希（前 16 位十六进制）。
+// Version 返回配置内容哈希（前 16 位十六进制）
 func (c *Config) Version() string { return c.version }
 
-// Machine 按 ID 取一台老虎机。
+// Machine 按 ID 取一台老虎机
 func (c *Config) Machine(id string) (*SlotMachine, bool) {
 	m, ok := c.Slots[id]
 	return m, ok
 }
 
-// Pool 按 ID 取一个卡池。
 func (c *Config) Pool(id string) (*GachaPool, bool) {
 	p, ok := c.Gacha[id]
 	return p, ok
 }
 
-// Product 按 ID 取一个商品。
+// Product 按 ID 取一个商品
 func (c *Config) Product(id uint32) (*Product, bool) {
 	p, ok := c.Products[id]
 	return p, ok
 }
 
-// Item 按模板 ID 取道具定义。
+// Item 按模板 ID 取道具定义
 func (c *Config) Item(tpl uint32) (*ItemDef, bool) {
 	d, ok := c.Items[tpl]
 	return d, ok
 }
 
-// Stackable 报告道具是否可堆叠。未定义的道具按不可堆叠处理（保守）。
+// Stackable 报告道具能否堆叠，没配的按不可堆叠处理
 func (c *Config) Stackable(tpl uint32) bool {
 	if d, ok := c.Items[tpl]; ok {
 		return d.Stackable
@@ -212,7 +200,7 @@ func (c *Config) Stackable(tpl uint32) bool {
 	return false
 }
 
-// ExpToLevel 返回升到下一级所需经验。
+// ExpToLevel 返回升到下一级所需经验
 func (c *Config) ExpToLevel(level uint32) uint64 {
 	if len(c.LevelExp) == 0 {
 		return 100 * uint64(level+1)
@@ -224,9 +212,7 @@ func (c *Config) ExpToLevel(level uint32) uint64 {
 	return c.LevelExp[i]
 }
 
-// computeVersion 计算内容哈希。
-//
-// 用规范化 JSON（map 键有序）保证同样的配置在任何机器上得到同样的版本号。
+// computeVersion 算内容哈希。用键有序的 JSON，保证同样的配置在哪台机器上版本号都一样
 func (c *Config) computeVersion() error {
 	raw, err := json.Marshal(canonical(c))
 	if err != nil {
@@ -237,7 +223,7 @@ func (c *Config) computeVersion() error {
 	return nil
 }
 
-// canonical 把配置转成键有序的中间结构，保证哈希稳定。
+// canonical 把配置转成键有序的形式，让哈希稳定
 func canonical(c *Config) any {
 	slotIDs := make([]string, 0, len(c.Slots))
 	for id := range c.Slots {
@@ -305,7 +291,7 @@ func canonical(c *Config) any {
 	return []any{slots, pools, prods, items, jps, c.LevelExp, c.RG, c.Bag}
 }
 
-// Validate 做上线前的自检。配置错误必须在启动时暴露，而不是在玩家手里暴露。
+// Validate 做启动检查。配置错了要在这里炸，不要等玩家碰到
 func (c *Config) Validate() error {
 	if len(c.Slots) == 0 {
 		return fmt.Errorf("gameconf: 至少要配置一台老虎机")
@@ -347,7 +333,7 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("gameconf: %s 的下注档位必须为正", id)
 			}
 			if b%lines != 0 {
-				// 线注 = 总注 / 线数，除不尽会产生舍入，舍入在钱上是不可接受的。
+				// 线注 = 总注 / 线数，除不尽就要舍入，钱上不能有舍入
 				return fmt.Errorf("gameconf: %s 的下注档位 %d 不能被线数 %d 整除", id, b, lines)
 			}
 		}
@@ -404,7 +390,7 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// Load 从 JSON 文件加载配置；path 为空时返回内置默认配置。
+// Load 从 JSON 文件加载配置，path 为空则用内置默认值
 func Load(path string) (*Config, error) {
 	c := Default()
 	if path != "" {
@@ -426,24 +412,20 @@ func Load(path string) (*Config, error) {
 	return c, nil
 }
 
-// Store 持有当前生效的配置，支持热替换。
-//
-// 读路径是无锁的原子读：spin 是热路径，不能每次去抢锁。
+// Store 持有当前生效的配置，支持热替换。读是原子读，spin 是热路径不能抢锁
 type Store struct {
 	cur atomic.Pointer[Config]
 }
 
-// NewStore 构造配置存储。
 func NewStore(c *Config) *Store {
 	s := &Store{}
 	s.cur.Store(c)
 	return s
 }
 
-// Get 返回当前配置。
 func (s *Store) Get() *Config { return s.cur.Load() }
 
-// Replace 热替换配置。替换前会做完整校验，校验不过则保持原配置不动。
+// Replace 热替换配置，校验不过就保持原样不动
 func (s *Store) Replace(c *Config) error {
 	if err := c.Validate(); err != nil {
 		return err

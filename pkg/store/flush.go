@@ -14,17 +14,17 @@ import (
 	"github.com/gamedev/f1/pkg/metrics"
 )
 
-// Level 是刷盘级别（§6.2）。
+// Level 刷盘级别
 type Level int
 
 const (
-	// L0 写穿：充值、开箱、交易。同步落 Redis 成功后才改内存回包。最大丢失 0。
+	// L0 写穿：充值、开箱、交易。落盘成功才改内存，不丢
 	L0 Level = 0
-	// L1 高频：货币、等级、背包。脏标记 + 3~5s。最大丢失 5s。
+	// L1 高频：货币、等级、背包。脏标记 + 5s，最多丢 5s
 	L1 Level = 1
-	// L2 低频：设置、社交。脏标记 + 60s。最大丢失 60s。
+	// L2 低频：设置、社交。脏标记 + 60s
 	L2 Level = 2
-	// L3 临时：战斗中间态。不刷盘。全部丢失可接受。
+	// L3 临时：战斗中间态，不刷盘
 	L3 Level = 3
 )
 
@@ -41,10 +41,9 @@ func (l Level) String() string {
 	}
 }
 
-// ModuleLevel 返回玩家模块的刷盘级别。
+// ModuleLevel 返回模块的刷盘级别
 //
-// 注意：货币虽在 base 模块，但充值、开箱这类「丢了会导致资产不一致」的操作
-// 走的是 L0 写穿路径，不依赖这里的定时刷盘。
+// 货币在 base 里，但充值开箱那类走的是 L0 写穿，不靠这里的定时刷盘
 func ModuleLevel(m Module) Level {
 	switch m {
 	case ModBase, ModBag, ModQuest:
@@ -52,26 +51,24 @@ func ModuleLevel(m Module) Level {
 	case ModSocial, ModMail, ModGacha:
 		return L2
 	case ModRound, ModRG:
-		// 回合与限额是资金相关状态，正常路径上随投注一起走 L0 原子提交，
-		// 不依赖定时刷盘。这里归到 L1 只是兜底：万一有旁路改动了它们，
-		// 也不至于要等一分钟才落盘。
+		// 回合和限额正常都随投注走 L0，这里归 L1 只是兜底，
+		// 免得有旁路改了它们还要等一分钟
 		return L1
 	default:
 		return L1
 	}
 }
 
-// HashWrite 描述一次 HASH 写入（profile 只读摘要）。
+// HashWrite 描述一次 HASH 写入，profile 摘要用
 type HashWrite struct {
 	Key    string
 	TTLSec int64
 	Fields []any // field/value 交替
 }
 
-// Entity 是一次刷盘的最小单位（一个玩家或一个房间）。
+// Entity 刷盘的最小单位，一个玩家或一个房间
 //
-// Keys 中的值必须已经在 Actor goroutine 内序列化完成 ——
-// 读内存必须如此，IO goroutine 不得触碰 Actor 的数据结构（§6.3）。
+// Keys 里的值必须在 Actor 里序列化好，IO goroutine 不许碰 Actor 的数据
 type Entity struct {
 	ID      uint64
 	Keys    map[string][]byte
@@ -80,7 +77,7 @@ type Entity struct {
 	DirtyAt time.Time // 最早标脏时刻，用于「脏数据滞留时长」指标
 }
 
-// Batch 是一次提交给 IO pool 的刷盘批次。
+// Batch 一次提交给 IO pool 的刷盘批次
 type Batch struct {
 	Shard    uint32
 	Epoch    int64
@@ -88,23 +85,23 @@ type Batch struct {
 	Entities []*Entity
 }
 
-// Result 是刷盘结果，回报给 Actor。
+// Result 刷盘结果，回报给 Actor
 type Result struct {
 	Shard  uint32
 	Epoch  int64
 	Level  Level
-	Failed []*Entity // 需要重新标脏的实体，绝不丢弃
+	Failed []*Entity // 要重新标脏的实体
 	Err    error
-	Fenced bool // true = epoch 过期，必须丢弃内存并停止服务
+	Fenced bool // epoch 过期，得丢内存停服务
 }
 
-// ErrBacklog 表示 flushCh 已满。
+// ErrBacklog 表示 flushCh 满了
 //
-// 「flushCh 满时走 default 重新标脏并告警，绝不阻塞 Actor。
-// 积压说明 Redis 已扛不住，阻塞会让故障扩散成全服卡死」（§6.3）。
+// 满了就重新标脏，绝不阻塞 Actor。积压说明 Redis 已经扛不住，
+// 这时候阻塞会把故障扩散成全服卡死
 var ErrBacklog = errors.New("store: flushCh 已满，重新标脏")
 
-// Flusher 是刷盘 IO pool。
+// Flusher 刷盘 IO pool
 type Flusher struct {
 	ch      chan *Batch
 	fencer  *Fencer
@@ -119,8 +116,7 @@ type Flusher struct {
 	quit     chan struct{}
 }
 
-// NewFlusher 构造刷盘器。onResult 会在 IO goroutine 中被调用，
-// 实现方只应把结果投递回对应分片的 Actor，不得在其中做业务。
+// NewFlusher 构造刷盘器。onResult 在 IO goroutine 里调，只该把结果投回 Actor
 func NewFlusher(fencer *Fencer, kind string, chanSize, workers, batchSize int, onResult func(*Result)) *Flusher {
 	if workers <= 0 {
 		workers = 4
@@ -142,7 +138,6 @@ func NewFlusher(fencer *Fencer, kind string, chanSize, workers, batchSize int, o
 	}
 }
 
-// Start 启动 IO 协程池。
 func (f *Flusher) Start(ctx context.Context) error {
 	if err := f.ensureScripts(ctx); err != nil {
 		logx.Warn("预加载 Lua 脚本失败，将在首次使用时回退到 EVAL", "err", err)
@@ -155,9 +150,7 @@ func (f *Flusher) Start(ctx context.Context) error {
 	return nil
 }
 
-// Submit 提交一个批次。永不阻塞。
-//
-// 返回 ErrBacklog 时调用方（Actor）必须把这批实体重新标脏。
+// Submit 提交一批，永不阻塞。返回 ErrBacklog 时调用方要把这批重新标脏
 func (f *Flusher) Submit(b *Batch) error {
 	if b == nil || len(b.Entities) == 0 {
 		return nil
@@ -175,9 +168,7 @@ func (f *Flusher) Submit(b *Batch) error {
 	}
 }
 
-// SubmitSync 同步刷一批（优雅下线、handoff 的全量刷盘用）。
-//
-// 与 Submit 不同，它绕过队列直接写，因为此时必须确认刷盘成功才能继续（§10.3 步骤 4）。
+// SubmitSync 同步刷一批，绕过队列直接写。下线和交接时要确认落盘才能往下走
 func (f *Flusher) SubmitSync(ctx context.Context, b *Batch) *Result {
 	if b == nil || len(b.Entities) == 0 {
 		return &Result{Shard: b.GetShard(), Level: b.GetLevel()}
@@ -185,7 +176,7 @@ func (f *Flusher) SubmitSync(ctx context.Context, b *Batch) *Result {
 	return f.write(ctx, b)
 }
 
-// GetShard/GetLevel 允许 nil 安全访问。
+// GetShard 和 GetLevel 允许 nil
 func (b *Batch) GetShard() uint32 {
 	if b == nil {
 		return 0
@@ -200,10 +191,9 @@ func (b *Batch) GetLevel() Level {
 	return b.Level
 }
 
-// Pending 返回队列中待处理批次数。
 func (f *Flusher) Pending() int { return len(f.ch) }
 
-// Stop 停止 IO pool，处理完队列中剩余批次。
+// Stop 停止 IO pool，把队列里剩的处理完
 func (f *Flusher) Stop() {
 	f.stopOnce.Do(func() { close(f.quit) })
 	f.wg.Wait()
@@ -221,7 +211,7 @@ func (f *Flusher) worker(ctx context.Context, id int) {
 				f.onResult(res)
 			}
 		case <-f.quit:
-			// 排空剩余批次后退出，避免丢掉已经清了 dirty 标记的数据。
+			// 排空再退，这些数据的 dirty 标记已经清了
 			for {
 				select {
 				case b := <-f.ch:
@@ -239,7 +229,7 @@ func (f *Flusher) worker(ctx context.Context, id int) {
 	}
 }
 
-// write 用 pipeline + Lua 写一批实体。
+// write 用 pipeline 加 Lua 写一批
 func (f *Flusher) write(ctx context.Context, b *Batch) *Result {
 	start := time.Now()
 	res := &Result{Shard: b.Shard, Epoch: b.Epoch, Level: b.Level}
@@ -249,7 +239,7 @@ func (f *Flusher) write(ctx context.Context, b *Batch) *Result {
 
 	failed, fenced, err := f.pipeline(wctx, b)
 	if isNoScript(err) {
-		// Redis 重启会丢失脚本缓存，重新加载后重试一次。
+		// Redis 重启会丢脚本缓存，重载后再试一次
 		if lerr := f.ensureScripts(wctx); lerr == nil {
 			failed, fenced, err = f.pipeline(wctx, b)
 		}
@@ -284,7 +274,7 @@ func (f *Flusher) write(ctx context.Context, b *Batch) *Result {
 	return res
 }
 
-// pipeline 执行实际写入，返回失败实体、是否被 fencing 拒绝、整体错误。
+// pipeline 真正落盘，返回失败的实体、是否被 fencing 拒、以及整体错误
 func (f *Flusher) pipeline(ctx context.Context, b *Batch) ([]*Entity, bool, error) {
 	epochKey := f.fencer.keys.Epoch(b.Shard)
 	pipe := f.fencer.rdb.Pipeline()
@@ -320,7 +310,7 @@ func (f *Flusher) pipeline(ctx context.Context, b *Batch) ([]*Entity, bool, erro
 
 	_, execErr := pipe.Exec(ctx)
 	if execErr != nil && !errors.Is(execErr, redis.Nil) {
-		// Exec 的错误是「其中至少一条失败」，仍需逐条检查。
+		// Exec 报错只说明至少一条失败，还得逐条看
 		logx.Debug("刷盘 pipeline 返回错误，逐条核对", "err", execErr)
 	}
 
@@ -342,17 +332,16 @@ func (f *Flusher) pipeline(ctx context.Context, b *Batch) ([]*Entity, bool, erro
 				}
 				continue
 			}
-			// 只有明确返回 1 才算成功。
+			// 只有明确返回 1 才算成功
 			//
-			// 这里必须「默认失败」：连接层面出错时 go-redis 只在 Exec 上返回错误，
-			// 不会给每条已入队的命令挂上 err，此时 Result() 是 (nil, nil)。
-			// 若把这种情况当成功，dirty 标记已被清掉而数据从未落盘 —— 静默丢档。
+			// 连接出错时 go-redis 只在 Exec 上返回错误，不给每条命令挂 err，
+			// Result() 会是 (nil, nil)。当成功处理就是静默丢弃
 			n, ok := v.(int64)
 			switch {
 			case !ok:
 				entOK = false
 			case n == 0:
-				// epoch 校验失败：调用方已过期。
+				// epoch 校验没过，调用方已经过期
 				entOK = false
 				fenced = true
 			case n != 1:
@@ -373,7 +362,7 @@ func (f *Flusher) pipeline(ctx context.Context, b *Batch) ([]*Entity, bool, erro
 	return failed, fenced, firstErr
 }
 
-// ensureScripts 预加载全部 Lua 脚本，避免 pipeline 中 EVALSHA 命中 NOSCRIPT。
+// ensureScripts 预加载 Lua 脚本，免得 pipeline 里 EVALSHA 撞 NOSCRIPT
 func (f *Flusher) ensureScripts(ctx context.Context) error {
 	scripts := []*redis.Script{
 		scriptRaiseEpoch, scriptWriteModules, scriptWriteHash,
@@ -392,7 +381,7 @@ func isNoScript(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "NOSCRIPT")
 }
 
-// EnsureScripts 供外部（非刷盘路径，如 L0 写穿）预加载脚本。
+// EnsureScripts 给刷盘之外的路径预加载脚本
 func EnsureScripts(ctx context.Context, rdb redis.UniversalClient) error {
 	for _, s := range []*redis.Script{
 		scriptRaiseEpoch, scriptWriteModules, scriptWriteHash,

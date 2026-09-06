@@ -17,7 +17,7 @@ func newTestFencer(t *testing.T) (*Fencer, *miniredis.Miniredis) {
 	return NewFencer(rdb, NewKeys(TagUID, 1024, "lobby"), "lobby"), mr
 }
 
-// §7.2 的核心场景：
+// 核心场景：
 //
 //	T4 节点 B 接管，抬高 epoch
 //	T5 节点 A 恢复，把旧内存刷入 Redis → 必须被拒绝
@@ -26,17 +26,17 @@ func TestEpochFencingRejectsStaleOwner(t *testing.T) {
 	ctx := context.Background()
 
 	const shard = 7
-	// A 先接管，epoch=100。
+	// A 先接管，epoch=100
 	if err := f.RaiseEpoch(ctx, shard, 100); err != nil {
 		t.Fatal(err)
 	}
-	// A 正常写入。
+	// A 正常写入
 	key := f.keys.Player(1001, ModBase)
 	if err := f.WriteModules(ctx, shard, 100, map[string][]byte{key: []byte("A-data")}); err != nil {
 		t.Fatalf("A 在持有期内写入应成功: %v", err)
 	}
 
-	// B 接管，抬高 epoch。
+	// B 接管，抬高 epoch
 	if err := f.RaiseEpoch(ctx, shard, 200); err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestEpochFencingRejectsStaleOwner(t *testing.T) {
 		t.Fatalf("B 写入应成功: %v", err)
 	}
 
-	// A 恢复后带着过期 epoch 写入 —— 必须被拒绝，且不能覆盖 B 的数据。
+	// A 恢复后带着过期 epoch 写入，必须被拒绝，且不能覆盖 B 的数据
 	err := f.WriteModules(ctx, shard, 100, map[string][]byte{key: []byte("A-stale")})
 	if !errors.Is(err, ErrFenced) {
 		t.Fatalf("陈旧 owner 的写入必须被 fencing 拒绝，实际: %v", err)
@@ -55,7 +55,7 @@ func TestEpochFencingRejectsStaleOwner(t *testing.T) {
 	}
 }
 
-// 接管方抬高 epoch 时，不得被更旧的 epoch 拉低。
+// 接管方抬高 epoch 时，不得被更旧的 epoch 拉低
 func TestRaiseEpochRejectsRegression(t *testing.T) {
 	f, _ := newTestFencer(t)
 	ctx := context.Background()
@@ -72,7 +72,7 @@ func TestRaiseEpochRejectsRegression(t *testing.T) {
 	}
 }
 
-// epoch 相同（未发生接管）时写入应放行 —— fencing 只拒绝「更旧」的调用方。
+// epoch 相同（未发生接管）时写入应放行，fencing 只拒绝「更旧」的调用方
 func TestEqualEpochAllowed(t *testing.T) {
 	f, _ := newTestFencer(t)
 	ctx := context.Background()
@@ -82,7 +82,7 @@ func TestEqualEpochAllowed(t *testing.T) {
 	}
 }
 
-// §6.2：L0 必须幂等 —— 客户端带唯一订单号，重复提交返回首次结果。
+// L0 必须幂等，客户端带唯一订单号，重复提交返回首次结果
 func TestWriteThroughIdempotent(t *testing.T) {
 	f, _ := newTestFencer(t)
 	ctx := context.Background()
@@ -101,7 +101,7 @@ func TestWriteThroughIdempotent(t *testing.T) {
 		t.Fatal("首次提交不应判为重复")
 	}
 
-	// 重复提交：返回首次结果，且不得再次写入数据。
+	// 重复提交：返回首次结果，且不得再次写入数据
 	res2, err := f.WriteThrough(ctx, shard, epoch, order, 3600, []byte("balance=200"),
 		map[string][]byte{key: []byte("v2")})
 	if err != nil {
@@ -118,7 +118,7 @@ func TestWriteThroughIdempotent(t *testing.T) {
 	}
 }
 
-// 写穿同样受 fencing 保护。
+// 写穿同样受 fencing 保护
 func TestWriteThroughFenced(t *testing.T) {
 	f, _ := newTestFencer(t)
 	ctx := context.Background()
@@ -136,7 +136,7 @@ func TestLoadPlayerMissingModules(t *testing.T) {
 	ctx := context.Background()
 	_ = f.RaiseEpoch(ctx, f.keys.Shard(1001), 1)
 
-	// 只写 base，其余模块缺失（新玩家 / 新增模块的老玩家）。
+	// 只写 base，其他模块缺着，模拟新玩家或加了新模块的老玩家
 	f.rdb.Set(ctx, f.keys.Player(1001, ModBase), "base-blob", 0)
 
 	blobs, err := f.LoadPlayer(ctx, 1001)

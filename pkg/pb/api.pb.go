@@ -22,11 +22,16 @@ const (
 )
 
 type LoginReq struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	Token         string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
-	GateId        string                 `protobuf:"bytes,3,opt,name=gate_id,json=gateId,proto3" json:"gate_id,omitempty"`
-	ConnId        uint64                 `protobuf:"varint,4,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Uid    uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Token  string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	GateId string                 `protobuf:"bytes,3,opt,name=gate_id,json=gateId,proto3" json:"gate_id,omitempty"`
+	ConnId uint64                 `protobuf:"varint,4,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
+	// 渠道登录：填 channel + credential，uid 和 token 留空，网关转给账号服务换。
+	// 重连时客户端应当带上次拿到的 token 走 uid+token 这条路，不要再打一次渠道
+	Channel       string `protobuf:"bytes,5,opt,name=channel,proto3" json:"channel,omitempty"`
+	Credential    string `protobuf:"bytes,6,opt,name=credential,proto3" json:"credential,omitempty"`
+	DeviceId      string `protobuf:"bytes,7,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -89,14 +94,496 @@ func (x *LoginReq) GetConnId() uint64 {
 	return 0
 }
 
+func (x *LoginReq) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *LoginReq) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
+}
+
+func (x *LoginReq) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+// AuthChannelReq 拿渠道凭证换我们自己的 token
+type AuthChannelReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Credential    string                 `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"`
+	DeviceId      string                 `protobuf:"bytes,3,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthChannelReq) Reset() {
+	*x = AuthChannelReq{}
+	mi := &file_api_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthChannelReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthChannelReq) ProtoMessage() {}
+
+func (x *AuthChannelReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthChannelReq.ProtoReflect.Descriptor instead.
+func (*AuthChannelReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *AuthChannelReq) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *AuthChannelReq) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
+}
+
+func (x *AuthChannelReq) GetDeviceId() string {
+	if x != nil {
+		return x.DeviceId
+	}
+	return ""
+}
+
+type AuthChannelResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Token         string                 `protobuf:"bytes,2,opt,name=token,proto3" json:"token,omitempty"`
+	ExpiresAt     int64                  `protobuf:"varint,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`    // 毫秒
+	FirstLogin    bool                   `protobuf:"varint,4,opt,name=first_login,json=firstLogin,proto3" json:"first_login,omitempty"` // 这次登录顺带开的号
+	OpenId        string                 `protobuf:"bytes,5,opt,name=open_id,json=openId,proto3" json:"open_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *AuthChannelResp) Reset() {
+	*x = AuthChannelResp{}
+	mi := &file_api_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *AuthChannelResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*AuthChannelResp) ProtoMessage() {}
+
+func (x *AuthChannelResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use AuthChannelResp.ProtoReflect.Descriptor instead.
+func (*AuthChannelResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *AuthChannelResp) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *AuthChannelResp) GetToken() string {
+	if x != nil {
+		return x.Token
+	}
+	return ""
+}
+
+func (x *AuthChannelResp) GetExpiresAt() int64 {
+	if x != nil {
+		return x.ExpiresAt
+	}
+	return 0
+}
+
+func (x *AuthChannelResp) GetFirstLogin() bool {
+	if x != nil {
+		return x.FirstLogin
+	}
+	return false
+}
+
+func (x *AuthChannelResp) GetOpenId() string {
+	if x != nil {
+		return x.OpenId
+	}
+	return ""
+}
+
+// BindChannelReq 给已登录的 uid 再绑一个渠道
+type BindChannelReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	Credential    string                 `protobuf:"bytes,2,opt,name=credential,proto3" json:"credential,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BindChannelReq) Reset() {
+	*x = BindChannelReq{}
+	mi := &file_api_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BindChannelReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BindChannelReq) ProtoMessage() {}
+
+func (x *BindChannelReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BindChannelReq.ProtoReflect.Descriptor instead.
+func (*BindChannelReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *BindChannelReq) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *BindChannelReq) GetCredential() string {
+	if x != nil {
+		return x.Credential
+	}
+	return ""
+}
+
+type BindChannelResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bindings      []*Binding             `protobuf:"bytes,1,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *BindChannelResp) Reset() {
+	*x = BindChannelResp{}
+	mi := &file_api_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *BindChannelResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*BindChannelResp) ProtoMessage() {}
+
+func (x *BindChannelResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use BindChannelResp.ProtoReflect.Descriptor instead.
+func (*BindChannelResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *BindChannelResp) GetBindings() []*Binding {
+	if x != nil {
+		return x.Bindings
+	}
+	return nil
+}
+
+type UnbindChannelReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnbindChannelReq) Reset() {
+	*x = UnbindChannelReq{}
+	mi := &file_api_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnbindChannelReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnbindChannelReq) ProtoMessage() {}
+
+func (x *UnbindChannelReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnbindChannelReq.ProtoReflect.Descriptor instead.
+func (*UnbindChannelReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *UnbindChannelReq) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+type UnbindChannelResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bindings      []*Binding             `protobuf:"bytes,1,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UnbindChannelResp) Reset() {
+	*x = UnbindChannelResp{}
+	mi := &file_api_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UnbindChannelResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UnbindChannelResp) ProtoMessage() {}
+
+func (x *UnbindChannelResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UnbindChannelResp.ProtoReflect.Descriptor instead.
+func (*UnbindChannelResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *UnbindChannelResp) GetBindings() []*Binding {
+	if x != nil {
+		return x.Bindings
+	}
+	return nil
+}
+
+type ListBindingsReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBindingsReq) Reset() {
+	*x = ListBindingsReq{}
+	mi := &file_api_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBindingsReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBindingsReq) ProtoMessage() {}
+
+func (x *ListBindingsReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBindingsReq.ProtoReflect.Descriptor instead.
+func (*ListBindingsReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{7}
+}
+
+type ListBindingsResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Bindings      []*Binding             `protobuf:"bytes,1,rep,name=bindings,proto3" json:"bindings,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ListBindingsResp) Reset() {
+	*x = ListBindingsResp{}
+	mi := &file_api_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ListBindingsResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ListBindingsResp) ProtoMessage() {}
+
+func (x *ListBindingsResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ListBindingsResp.ProtoReflect.Descriptor instead.
+func (*ListBindingsResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ListBindingsResp) GetBindings() []*Binding {
+	if x != nil {
+		return x.Bindings
+	}
+	return nil
+}
+
+type Binding struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`
+	OpenId        string                 `protobuf:"bytes,2,opt,name=open_id,json=openId,proto3" json:"open_id,omitempty"`
+	BoundAt       int64                  `protobuf:"varint,3,opt,name=bound_at,json=boundAt,proto3" json:"bound_at,omitempty"` // 毫秒
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Binding) Reset() {
+	*x = Binding{}
+	mi := &file_api_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Binding) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Binding) ProtoMessage() {}
+
+func (x *Binding) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Binding.ProtoReflect.Descriptor instead.
+func (*Binding) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *Binding) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *Binding) GetOpenId() string {
+	if x != nil {
+		return x.OpenId
+	}
+	return ""
+}
+
+func (x *Binding) GetBoundAt() int64 {
+	if x != nil {
+		return x.BoundAt
+	}
+	return 0
+}
+
 type LoginResp struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	Base      *PlayerBase            `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
 	Bag       *PlayerBag             `protobuf:"bytes,2,opt,name=bag,proto3" json:"bag,omitempty"`
 	Quest     *PlayerQuest           `protobuf:"bytes,3,opt,name=quest,proto3" json:"quest,omitempty"`
 	Reconnect bool                   `protobuf:"varint,4,opt,name=reconnect,proto3" json:"reconnect,omitempty"`
-	// open_round 非空表示有未结算的回合（例如免费旋转打到一半断线），
-	// 客户端必须先把它打完。这是监管对 incomplete round 的硬性要求。
+	// open_round 非空表示有没打完的回合，客户端要先把它打完。
 	OpenRound     *Round `protobuf:"bytes,5,opt,name=open_round,json=openRound,proto3" json:"open_round,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -104,7 +591,7 @@ type LoginResp struct {
 
 func (x *LoginResp) Reset() {
 	*x = LoginResp{}
-	mi := &file_api_proto_msgTypes[1]
+	mi := &file_api_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -116,7 +603,7 @@ func (x *LoginResp) String() string {
 func (*LoginResp) ProtoMessage() {}
 
 func (x *LoginResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[1]
+	mi := &file_api_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -129,7 +616,7 @@ func (x *LoginResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoginResp.ProtoReflect.Descriptor instead.
 func (*LoginResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{1}
+	return file_api_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *LoginResp) GetBase() *PlayerBase {
@@ -172,14 +659,14 @@ type LogoutReq struct {
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
 	GateId        string                 `protobuf:"bytes,2,opt,name=gate_id,json=gateId,proto3" json:"gate_id,omitempty"`
 	ConnId        uint64                 `protobuf:"varint,3,opt,name=conn_id,json=connId,proto3" json:"conn_id,omitempty"`
-	Reason        uint32                 `protobuf:"varint,4,opt,name=reason,proto3" json:"reason,omitempty"` // 0=主动 1=断线 2=顶号
+	Reason        uint32                 `protobuf:"varint,4,opt,name=reason,proto3" json:"reason,omitempty"` // 0 主动 1 断线 2 顶号
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LogoutReq) Reset() {
 	*x = LogoutReq{}
-	mi := &file_api_proto_msgTypes[2]
+	mi := &file_api_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -191,7 +678,7 @@ func (x *LogoutReq) String() string {
 func (*LogoutReq) ProtoMessage() {}
 
 func (x *LogoutReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[2]
+	mi := &file_api_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -204,7 +691,7 @@ func (x *LogoutReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LogoutReq.ProtoReflect.Descriptor instead.
 func (*LogoutReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{2}
+	return file_api_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *LogoutReq) GetUid() uint64 {
@@ -248,7 +735,7 @@ type KickNotify struct {
 
 func (x *KickNotify) Reset() {
 	*x = KickNotify{}
-	mi := &file_api_proto_msgTypes[3]
+	mi := &file_api_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -260,7 +747,7 @@ func (x *KickNotify) String() string {
 func (*KickNotify) ProtoMessage() {}
 
 func (x *KickNotify) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[3]
+	mi := &file_api_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -273,7 +760,7 @@ func (x *KickNotify) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KickNotify.ProtoReflect.Descriptor instead.
 func (*KickNotify) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{3}
+	return file_api_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *KickNotify) GetUid() uint64 {
@@ -313,7 +800,7 @@ type HeartbeatReq struct {
 
 func (x *HeartbeatReq) Reset() {
 	*x = HeartbeatReq{}
-	mi := &file_api_proto_msgTypes[4]
+	mi := &file_api_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -325,7 +812,7 @@ func (x *HeartbeatReq) String() string {
 func (*HeartbeatReq) ProtoMessage() {}
 
 func (x *HeartbeatReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[4]
+	mi := &file_api_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -338,7 +825,7 @@ func (x *HeartbeatReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatReq.ProtoReflect.Descriptor instead.
 func (*HeartbeatReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{4}
+	return file_api_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *HeartbeatReq) GetClientTs() int64 {
@@ -357,7 +844,7 @@ type HeartbeatResp struct {
 
 func (x *HeartbeatResp) Reset() {
 	*x = HeartbeatResp{}
-	mi := &file_api_proto_msgTypes[5]
+	mi := &file_api_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -369,7 +856,7 @@ func (x *HeartbeatResp) String() string {
 func (*HeartbeatResp) ProtoMessage() {}
 
 func (x *HeartbeatResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[5]
+	mi := &file_api_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -382,7 +869,7 @@ func (x *HeartbeatResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HeartbeatResp.ProtoReflect.Descriptor instead.
 func (*HeartbeatResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{5}
+	return file_api_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *HeartbeatResp) GetServerTs() int64 {
@@ -403,7 +890,7 @@ type AddCurrencyReq struct {
 
 func (x *AddCurrencyReq) Reset() {
 	*x = AddCurrencyReq{}
-	mi := &file_api_proto_msgTypes[6]
+	mi := &file_api_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -415,7 +902,7 @@ func (x *AddCurrencyReq) String() string {
 func (*AddCurrencyReq) ProtoMessage() {}
 
 func (x *AddCurrencyReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[6]
+	mi := &file_api_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -428,7 +915,7 @@ func (x *AddCurrencyReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddCurrencyReq.ProtoReflect.Descriptor instead.
 func (*AddCurrencyReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{6}
+	return file_api_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AddCurrencyReq) GetCurrency() uint32 {
@@ -461,7 +948,7 @@ type AddCurrencyResp struct {
 
 func (x *AddCurrencyResp) Reset() {
 	*x = AddCurrencyResp{}
-	mi := &file_api_proto_msgTypes[7]
+	mi := &file_api_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -473,7 +960,7 @@ func (x *AddCurrencyResp) String() string {
 func (*AddCurrencyResp) ProtoMessage() {}
 
 func (x *AddCurrencyResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[7]
+	mi := &file_api_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -486,7 +973,7 @@ func (x *AddCurrencyResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddCurrencyResp.ProtoReflect.Descriptor instead.
 func (*AddCurrencyResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{7}
+	return file_api_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AddCurrencyResp) GetBalance() int64 {
@@ -507,7 +994,7 @@ type AddItemReq struct {
 
 func (x *AddItemReq) Reset() {
 	*x = AddItemReq{}
-	mi := &file_api_proto_msgTypes[8]
+	mi := &file_api_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -519,7 +1006,7 @@ func (x *AddItemReq) String() string {
 func (*AddItemReq) ProtoMessage() {}
 
 func (x *AddItemReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[8]
+	mi := &file_api_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -532,7 +1019,7 @@ func (x *AddItemReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddItemReq.ProtoReflect.Descriptor instead.
 func (*AddItemReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{8}
+	return file_api_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *AddItemReq) GetTplId() uint32 {
@@ -565,7 +1052,7 @@ type AddItemResp struct {
 
 func (x *AddItemResp) Reset() {
 	*x = AddItemResp{}
-	mi := &file_api_proto_msgTypes[9]
+	mi := &file_api_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -577,7 +1064,7 @@ func (x *AddItemResp) String() string {
 func (*AddItemResp) ProtoMessage() {}
 
 func (x *AddItemResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[9]
+	mi := &file_api_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -590,7 +1077,7 @@ func (x *AddItemResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddItemResp.ProtoReflect.Descriptor instead.
 func (*AddItemResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{9}
+	return file_api_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *AddItemResp) GetItem() *Item {
@@ -610,7 +1097,7 @@ type UseItemReq struct {
 
 func (x *UseItemReq) Reset() {
 	*x = UseItemReq{}
-	mi := &file_api_proto_msgTypes[10]
+	mi := &file_api_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -622,7 +1109,7 @@ func (x *UseItemReq) String() string {
 func (*UseItemReq) ProtoMessage() {}
 
 func (x *UseItemReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[10]
+	mi := &file_api_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -635,7 +1122,7 @@ func (x *UseItemReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UseItemReq.ProtoReflect.Descriptor instead.
 func (*UseItemReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{10}
+	return file_api_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *UseItemReq) GetInstanceId() uint64 {
@@ -661,7 +1148,7 @@ type UseItemResp struct {
 
 func (x *UseItemResp) Reset() {
 	*x = UseItemResp{}
-	mi := &file_api_proto_msgTypes[11]
+	mi := &file_api_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -673,7 +1160,7 @@ func (x *UseItemResp) String() string {
 func (*UseItemResp) ProtoMessage() {}
 
 func (x *UseItemResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[11]
+	mi := &file_api_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -686,7 +1173,7 @@ func (x *UseItemResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UseItemResp.ProtoReflect.Descriptor instead.
 func (*UseItemResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{11}
+	return file_api_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *UseItemResp) GetRemain() int64 {
@@ -704,7 +1191,7 @@ type GetBagReq struct {
 
 func (x *GetBagReq) Reset() {
 	*x = GetBagReq{}
-	mi := &file_api_proto_msgTypes[12]
+	mi := &file_api_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -716,7 +1203,7 @@ func (x *GetBagReq) String() string {
 func (*GetBagReq) ProtoMessage() {}
 
 func (x *GetBagReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[12]
+	mi := &file_api_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -729,7 +1216,7 @@ func (x *GetBagReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBagReq.ProtoReflect.Descriptor instead.
 func (*GetBagReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{12}
+	return file_api_proto_rawDescGZIP(), []int{21}
 }
 
 type GetBagResp struct {
@@ -741,7 +1228,7 @@ type GetBagResp struct {
 
 func (x *GetBagResp) Reset() {
 	*x = GetBagResp{}
-	mi := &file_api_proto_msgTypes[13]
+	mi := &file_api_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -753,7 +1240,7 @@ func (x *GetBagResp) String() string {
 func (*GetBagResp) ProtoMessage() {}
 
 func (x *GetBagResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[13]
+	mi := &file_api_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -766,7 +1253,7 @@ func (x *GetBagResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetBagResp.ProtoReflect.Descriptor instead.
 func (*GetBagResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{13}
+	return file_api_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetBagResp) GetBag() *PlayerBag {
@@ -785,7 +1272,7 @@ type AcceptQuestReq struct {
 
 func (x *AcceptQuestReq) Reset() {
 	*x = AcceptQuestReq{}
-	mi := &file_api_proto_msgTypes[14]
+	mi := &file_api_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -797,7 +1284,7 @@ func (x *AcceptQuestReq) String() string {
 func (*AcceptQuestReq) ProtoMessage() {}
 
 func (x *AcceptQuestReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[14]
+	mi := &file_api_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -810,7 +1297,7 @@ func (x *AcceptQuestReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AcceptQuestReq.ProtoReflect.Descriptor instead.
 func (*AcceptQuestReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{14}
+	return file_api_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *AcceptQuestReq) GetQuestId() uint32 {
@@ -830,7 +1317,7 @@ type QuestProgressReq struct {
 
 func (x *QuestProgressReq) Reset() {
 	*x = QuestProgressReq{}
-	mi := &file_api_proto_msgTypes[15]
+	mi := &file_api_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -842,7 +1329,7 @@ func (x *QuestProgressReq) String() string {
 func (*QuestProgressReq) ProtoMessage() {}
 
 func (x *QuestProgressReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[15]
+	mi := &file_api_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -855,7 +1342,7 @@ func (x *QuestProgressReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestProgressReq.ProtoReflect.Descriptor instead.
 func (*QuestProgressReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{15}
+	return file_api_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *QuestProgressReq) GetQuestId() uint32 {
@@ -881,7 +1368,7 @@ type QuestResp struct {
 
 func (x *QuestResp) Reset() {
 	*x = QuestResp{}
-	mi := &file_api_proto_msgTypes[16]
+	mi := &file_api_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -893,7 +1380,7 @@ func (x *QuestResp) String() string {
 func (*QuestResp) ProtoMessage() {}
 
 func (x *QuestResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[16]
+	mi := &file_api_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -906,7 +1393,7 @@ func (x *QuestResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use QuestResp.ProtoReflect.Descriptor instead.
 func (*QuestResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{16}
+	return file_api_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *QuestResp) GetQuest() *Quest {
@@ -925,7 +1412,7 @@ type GetProfileReq struct {
 
 func (x *GetProfileReq) Reset() {
 	*x = GetProfileReq{}
-	mi := &file_api_proto_msgTypes[17]
+	mi := &file_api_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -937,7 +1424,7 @@ func (x *GetProfileReq) String() string {
 func (*GetProfileReq) ProtoMessage() {}
 
 func (x *GetProfileReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[17]
+	mi := &file_api_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -950,7 +1437,7 @@ func (x *GetProfileReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileReq.ProtoReflect.Descriptor instead.
 func (*GetProfileReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{17}
+	return file_api_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *GetProfileReq) GetUids() []uint64 {
@@ -969,7 +1456,7 @@ type GetProfileResp struct {
 
 func (x *GetProfileResp) Reset() {
 	*x = GetProfileResp{}
-	mi := &file_api_proto_msgTypes[18]
+	mi := &file_api_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -981,7 +1468,7 @@ func (x *GetProfileResp) String() string {
 func (*GetProfileResp) ProtoMessage() {}
 
 func (x *GetProfileResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[18]
+	mi := &file_api_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -994,7 +1481,7 @@ func (x *GetProfileResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileResp.ProtoReflect.Descriptor instead.
 func (*GetProfileResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{18}
+	return file_api_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *GetProfileResp) GetProfiles() []*Profile {
@@ -1013,7 +1500,7 @@ type AddFriendReq struct {
 
 func (x *AddFriendReq) Reset() {
 	*x = AddFriendReq{}
-	mi := &file_api_proto_msgTypes[19]
+	mi := &file_api_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1025,7 +1512,7 @@ func (x *AddFriendReq) String() string {
 func (*AddFriendReq) ProtoMessage() {}
 
 func (x *AddFriendReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[19]
+	mi := &file_api_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1038,7 +1525,7 @@ func (x *AddFriendReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddFriendReq.ProtoReflect.Descriptor instead.
 func (*AddFriendReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{19}
+	return file_api_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *AddFriendReq) GetTarget() uint64 {
@@ -1056,7 +1543,7 @@ type GetSocialReq struct {
 
 func (x *GetSocialReq) Reset() {
 	*x = GetSocialReq{}
-	mi := &file_api_proto_msgTypes[20]
+	mi := &file_api_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1068,7 +1555,7 @@ func (x *GetSocialReq) String() string {
 func (*GetSocialReq) ProtoMessage() {}
 
 func (x *GetSocialReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[20]
+	mi := &file_api_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1081,7 +1568,7 @@ func (x *GetSocialReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSocialReq.ProtoReflect.Descriptor instead.
 func (*GetSocialReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{20}
+	return file_api_proto_rawDescGZIP(), []int{29}
 }
 
 type GetSocialResp struct {
@@ -1093,7 +1580,7 @@ type GetSocialResp struct {
 
 func (x *GetSocialResp) Reset() {
 	*x = GetSocialResp{}
-	mi := &file_api_proto_msgTypes[21]
+	mi := &file_api_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1105,7 +1592,7 @@ func (x *GetSocialResp) String() string {
 func (*GetSocialResp) ProtoMessage() {}
 
 func (x *GetSocialResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[21]
+	mi := &file_api_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1118,7 +1605,7 @@ func (x *GetSocialResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetSocialResp.ProtoReflect.Descriptor instead.
 func (*GetSocialResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{21}
+	return file_api_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *GetSocialResp) GetSocial() *PlayerSocial {
@@ -1136,7 +1623,7 @@ type GetMailReq struct {
 
 func (x *GetMailReq) Reset() {
 	*x = GetMailReq{}
-	mi := &file_api_proto_msgTypes[22]
+	mi := &file_api_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1148,7 +1635,7 @@ func (x *GetMailReq) String() string {
 func (*GetMailReq) ProtoMessage() {}
 
 func (x *GetMailReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[22]
+	mi := &file_api_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1161,7 +1648,7 @@ func (x *GetMailReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMailReq.ProtoReflect.Descriptor instead.
 func (*GetMailReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{22}
+	return file_api_proto_rawDescGZIP(), []int{31}
 }
 
 type GetMailResp struct {
@@ -1173,7 +1660,7 @@ type GetMailResp struct {
 
 func (x *GetMailResp) Reset() {
 	*x = GetMailResp{}
-	mi := &file_api_proto_msgTypes[23]
+	mi := &file_api_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1185,7 +1672,7 @@ func (x *GetMailResp) String() string {
 func (*GetMailResp) ProtoMessage() {}
 
 func (x *GetMailResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[23]
+	mi := &file_api_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1198,7 +1685,7 @@ func (x *GetMailResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetMailResp.ProtoReflect.Descriptor instead.
 func (*GetMailResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{23}
+	return file_api_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *GetMailResp) GetMail() *PlayerMail {
@@ -1217,7 +1704,7 @@ type ClaimMailReq struct {
 
 func (x *ClaimMailReq) Reset() {
 	*x = ClaimMailReq{}
-	mi := &file_api_proto_msgTypes[24]
+	mi := &file_api_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1229,7 +1716,7 @@ func (x *ClaimMailReq) String() string {
 func (*ClaimMailReq) ProtoMessage() {}
 
 func (x *ClaimMailReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[24]
+	mi := &file_api_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1242,7 +1729,7 @@ func (x *ClaimMailReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimMailReq.ProtoReflect.Descriptor instead.
 func (*ClaimMailReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{24}
+	return file_api_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *ClaimMailReq) GetMailId() uint64 {
@@ -1261,7 +1748,7 @@ type ClaimMailResp struct {
 
 func (x *ClaimMailResp) Reset() {
 	*x = ClaimMailResp{}
-	mi := &file_api_proto_msgTypes[25]
+	mi := &file_api_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1273,7 +1760,7 @@ func (x *ClaimMailResp) String() string {
 func (*ClaimMailResp) ProtoMessage() {}
 
 func (x *ClaimMailResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[25]
+	mi := &file_api_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1286,7 +1773,7 @@ func (x *ClaimMailResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ClaimMailResp.ProtoReflect.Descriptor instead.
 func (*ClaimMailResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{25}
+	return file_api_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ClaimMailResp) GetItems() []*Item {
@@ -1296,7 +1783,7 @@ func (x *ClaimMailResp) GetItems() []*Item {
 	return nil
 }
 
-// L0 写穿：充值，必须幂等（设计文档 §6.2）+ 必须验签（评审 P0-2）
+// 充值。订单号保证幂等，回执签名防伪造，两个都要。
 type PurchaseReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"` // 客户端唯一订单号
@@ -1308,7 +1795,7 @@ type PurchaseReq struct {
 
 func (x *PurchaseReq) Reset() {
 	*x = PurchaseReq{}
-	mi := &file_api_proto_msgTypes[26]
+	mi := &file_api_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1320,7 +1807,7 @@ func (x *PurchaseReq) String() string {
 func (*PurchaseReq) ProtoMessage() {}
 
 func (x *PurchaseReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[26]
+	mi := &file_api_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1333,7 +1820,7 @@ func (x *PurchaseReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurchaseReq.ProtoReflect.Descriptor instead.
 func (*PurchaseReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{26}
+	return file_api_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *PurchaseReq) GetOrderId() string {
@@ -1367,7 +1854,7 @@ type PurchaseResp struct {
 
 func (x *PurchaseResp) Reset() {
 	*x = PurchaseResp{}
-	mi := &file_api_proto_msgTypes[27]
+	mi := &file_api_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1379,7 +1866,7 @@ func (x *PurchaseResp) String() string {
 func (*PurchaseResp) ProtoMessage() {}
 
 func (x *PurchaseResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[27]
+	mi := &file_api_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1392,7 +1879,7 @@ func (x *PurchaseResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurchaseResp.ProtoReflect.Descriptor instead.
 func (*PurchaseResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{27}
+	return file_api_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PurchaseResp) GetBalance() int64 {
@@ -1414,9 +1901,7 @@ type CreateRoomReq struct {
 	Mode      uint32                 `protobuf:"varint,1,opt,name=mode,proto3" json:"mode,omitempty"`
 	MaxPlayer uint32                 `protobuf:"varint,2,opt,name=max_player,json=maxPlayer,proto3" json:"max_player,omitempty"`
 	Members   []uint64               `protobuf:"varint,3,rep,packed,name=members,proto3" json:"members,omitempty"`
-	// room_id 由调用方（Match / Lobby）用雪花生成后填入：
-	// 房间分片 = room_id % ShardCount，调用方必须据此选择 subject，
-	// 因此 ID 只能在调用方产生，不能等到 Room 分片里再生成。
+	// room_id 由调用方用雪花生成。房间分片由它决定，调用方得先有 ID 才能选对 subject。
 	RoomId        uint64 `protobuf:"varint,4,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1424,7 +1909,7 @@ type CreateRoomReq struct {
 
 func (x *CreateRoomReq) Reset() {
 	*x = CreateRoomReq{}
-	mi := &file_api_proto_msgTypes[28]
+	mi := &file_api_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1436,7 +1921,7 @@ func (x *CreateRoomReq) String() string {
 func (*CreateRoomReq) ProtoMessage() {}
 
 func (x *CreateRoomReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[28]
+	mi := &file_api_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1449,7 +1934,7 @@ func (x *CreateRoomReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoomReq.ProtoReflect.Descriptor instead.
 func (*CreateRoomReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{28}
+	return file_api_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *CreateRoomReq) GetMode() uint32 {
@@ -1489,7 +1974,7 @@ type CreateRoomResp struct {
 
 func (x *CreateRoomResp) Reset() {
 	*x = CreateRoomResp{}
-	mi := &file_api_proto_msgTypes[29]
+	mi := &file_api_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1501,7 +1986,7 @@ func (x *CreateRoomResp) String() string {
 func (*CreateRoomResp) ProtoMessage() {}
 
 func (x *CreateRoomResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[29]
+	mi := &file_api_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1514,7 +1999,7 @@ func (x *CreateRoomResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CreateRoomResp.ProtoReflect.Descriptor instead.
 func (*CreateRoomResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{29}
+	return file_api_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *CreateRoomResp) GetRoomId() uint64 {
@@ -1534,7 +2019,7 @@ type JoinRoomReq struct {
 
 func (x *JoinRoomReq) Reset() {
 	*x = JoinRoomReq{}
-	mi := &file_api_proto_msgTypes[30]
+	mi := &file_api_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1546,7 +2031,7 @@ func (x *JoinRoomReq) String() string {
 func (*JoinRoomReq) ProtoMessage() {}
 
 func (x *JoinRoomReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[30]
+	mi := &file_api_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1559,7 +2044,7 @@ func (x *JoinRoomReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JoinRoomReq.ProtoReflect.Descriptor instead.
 func (*JoinRoomReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{30}
+	return file_api_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *JoinRoomReq) GetRoomId() uint64 {
@@ -1586,7 +2071,7 @@ type LeaveRoomReq struct {
 
 func (x *LeaveRoomReq) Reset() {
 	*x = LeaveRoomReq{}
-	mi := &file_api_proto_msgTypes[31]
+	mi := &file_api_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1598,7 +2083,7 @@ func (x *LeaveRoomReq) String() string {
 func (*LeaveRoomReq) ProtoMessage() {}
 
 func (x *LeaveRoomReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[31]
+	mi := &file_api_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1611,7 +2096,7 @@ func (x *LeaveRoomReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LeaveRoomReq.ProtoReflect.Descriptor instead.
 func (*LeaveRoomReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{31}
+	return file_api_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *LeaveRoomReq) GetRoomId() uint64 {
@@ -1640,7 +2125,7 @@ type RoomOpReq struct {
 
 func (x *RoomOpReq) Reset() {
 	*x = RoomOpReq{}
-	mi := &file_api_proto_msgTypes[32]
+	mi := &file_api_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1652,7 +2137,7 @@ func (x *RoomOpReq) String() string {
 func (*RoomOpReq) ProtoMessage() {}
 
 func (x *RoomOpReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[32]
+	mi := &file_api_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1665,7 +2150,7 @@ func (x *RoomOpReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomOpReq.ProtoReflect.Descriptor instead.
 func (*RoomOpReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{32}
+	return file_api_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *RoomOpReq) GetRoomId() uint64 {
@@ -1700,7 +2185,7 @@ type RoomSnapshot struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RoomId        uint64                 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
 	Mode          uint32                 `protobuf:"varint,2,opt,name=mode,proto3" json:"mode,omitempty"`
-	State         uint32                 `protobuf:"varint,3,opt,name=state,proto3" json:"state,omitempty"` // 0=等待 1=战斗中 2=结算
+	State         uint32                 `protobuf:"varint,3,opt,name=state,proto3" json:"state,omitempty"` // 0 等待 1 战斗中 2 结算
 	Members       []uint64               `protobuf:"varint,4,rep,packed,name=members,proto3" json:"members,omitempty"`
 	CreatedAt     int64                  `protobuf:"varint,5,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	StartedAt     int64                  `protobuf:"varint,6,opt,name=started_at,json=startedAt,proto3" json:"started_at,omitempty"`
@@ -1711,7 +2196,7 @@ type RoomSnapshot struct {
 
 func (x *RoomSnapshot) Reset() {
 	*x = RoomSnapshot{}
-	mi := &file_api_proto_msgTypes[33]
+	mi := &file_api_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1723,7 +2208,7 @@ func (x *RoomSnapshot) String() string {
 func (*RoomSnapshot) ProtoMessage() {}
 
 func (x *RoomSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[33]
+	mi := &file_api_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1736,7 +2221,7 @@ func (x *RoomSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomSnapshot.ProtoReflect.Descriptor instead.
 func (*RoomSnapshot) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{33}
+	return file_api_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *RoomSnapshot) GetRoomId() uint64 {
@@ -1799,7 +2284,7 @@ type RoomBroadcast struct {
 
 func (x *RoomBroadcast) Reset() {
 	*x = RoomBroadcast{}
-	mi := &file_api_proto_msgTypes[34]
+	mi := &file_api_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1811,7 +2296,7 @@ func (x *RoomBroadcast) String() string {
 func (*RoomBroadcast) ProtoMessage() {}
 
 func (x *RoomBroadcast) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[34]
+	mi := &file_api_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1824,7 +2309,7 @@ func (x *RoomBroadcast) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoomBroadcast.ProtoReflect.Descriptor instead.
 func (*RoomBroadcast) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{34}
+	return file_api_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *RoomBroadcast) GetRoomId() uint64 {
@@ -1848,7 +2333,7 @@ func (x *RoomBroadcast) GetPayload() []byte {
 	return nil
 }
 
-// 网关聚合推送：一条消息带多个 uid（设计文档 §9.3）
+// 网关聚合推送，一条消息带多个 uid
 type MultiPush struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uids          []uint64               `protobuf:"varint,1,rep,packed,name=uids,proto3" json:"uids,omitempty"`
@@ -1860,7 +2345,7 @@ type MultiPush struct {
 
 func (x *MultiPush) Reset() {
 	*x = MultiPush{}
-	mi := &file_api_proto_msgTypes[35]
+	mi := &file_api_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1872,7 +2357,7 @@ func (x *MultiPush) String() string {
 func (*MultiPush) ProtoMessage() {}
 
 func (x *MultiPush) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[35]
+	mi := &file_api_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1885,7 +2370,7 @@ func (x *MultiPush) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MultiPush.ProtoReflect.Descriptor instead.
 func (*MultiPush) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{35}
+	return file_api_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *MultiPush) GetUids() []uint64 {
@@ -1912,7 +2397,7 @@ func (x *MultiPush) GetPayload() []byte {
 type BattleResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	RoomId        uint64                 `protobuf:"varint,1,opt,name=room_id,json=roomId,proto3" json:"room_id,omitempty"`
-	TargetUid     uint64                 `protobuf:"varint,5,opt,name=target_uid,json=targetUid,proto3" json:"target_uid,omitempty"` // job 投递时指明结算目标
+	TargetUid     uint64                 `protobuf:"varint,5,opt,name=target_uid,json=targetUid,proto3" json:"target_uid,omitempty"` // job 投递时指明给谁结算
 	Winners       []uint64               `protobuf:"varint,2,rep,packed,name=winners,proto3" json:"winners,omitempty"`
 	Losers        []uint64               `protobuf:"varint,3,rep,packed,name=losers,proto3" json:"losers,omitempty"`
 	Score         map[uint64]int64       `protobuf:"bytes,4,rep,name=score,proto3" json:"score,omitempty" protobuf_key:"varint,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
@@ -1922,7 +2407,7 @@ type BattleResult struct {
 
 func (x *BattleResult) Reset() {
 	*x = BattleResult{}
-	mi := &file_api_proto_msgTypes[36]
+	mi := &file_api_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1934,7 +2419,7 @@ func (x *BattleResult) String() string {
 func (*BattleResult) ProtoMessage() {}
 
 func (x *BattleResult) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[36]
+	mi := &file_api_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1947,7 +2432,7 @@ func (x *BattleResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BattleResult.ProtoReflect.Descriptor instead.
 func (*BattleResult) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{36}
+	return file_api_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *BattleResult) GetRoomId() uint64 {
@@ -1997,7 +2482,7 @@ type MatchEnqueueReq struct {
 
 func (x *MatchEnqueueReq) Reset() {
 	*x = MatchEnqueueReq{}
-	mi := &file_api_proto_msgTypes[37]
+	mi := &file_api_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2009,7 +2494,7 @@ func (x *MatchEnqueueReq) String() string {
 func (*MatchEnqueueReq) ProtoMessage() {}
 
 func (x *MatchEnqueueReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[37]
+	mi := &file_api_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2022,7 +2507,7 @@ func (x *MatchEnqueueReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchEnqueueReq.ProtoReflect.Descriptor instead.
 func (*MatchEnqueueReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{37}
+	return file_api_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *MatchEnqueueReq) GetUid() uint64 {
@@ -2064,7 +2549,7 @@ type MatchCancelReq struct {
 
 func (x *MatchCancelReq) Reset() {
 	*x = MatchCancelReq{}
-	mi := &file_api_proto_msgTypes[38]
+	mi := &file_api_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2561,7 @@ func (x *MatchCancelReq) String() string {
 func (*MatchCancelReq) ProtoMessage() {}
 
 func (x *MatchCancelReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[38]
+	mi := &file_api_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2574,7 @@ func (x *MatchCancelReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchCancelReq.ProtoReflect.Descriptor instead.
 func (*MatchCancelReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{38}
+	return file_api_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *MatchCancelReq) GetUid() uint64 {
@@ -2123,7 +2608,7 @@ type MatchAck struct {
 
 func (x *MatchAck) Reset() {
 	*x = MatchAck{}
-	mi := &file_api_proto_msgTypes[39]
+	mi := &file_api_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2135,7 +2620,7 @@ func (x *MatchAck) String() string {
 func (*MatchAck) ProtoMessage() {}
 
 func (x *MatchAck) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[39]
+	mi := &file_api_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2148,7 +2633,7 @@ func (x *MatchAck) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchAck.ProtoReflect.Descriptor instead.
 func (*MatchAck) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{39}
+	return file_api_proto_rawDescGZIP(), []int{48}
 }
 
 func (x *MatchAck) GetQueued() bool {
@@ -2176,7 +2661,7 @@ type MatchFound struct {
 
 func (x *MatchFound) Reset() {
 	*x = MatchFound{}
-	mi := &file_api_proto_msgTypes[40]
+	mi := &file_api_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2188,7 +2673,7 @@ func (x *MatchFound) String() string {
 func (*MatchFound) ProtoMessage() {}
 
 func (x *MatchFound) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[40]
+	mi := &file_api_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2201,7 +2686,7 @@ func (x *MatchFound) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MatchFound.ProtoReflect.Descriptor instead.
 func (*MatchFound) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{40}
+	return file_api_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *MatchFound) GetRoomId() uint64 {
@@ -2227,7 +2712,7 @@ func (x *MatchFound) GetMembers() []uint64 {
 
 type ChatReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Channel       uint32                 `protobuf:"varint,1,opt,name=channel,proto3" json:"channel,omitempty"` // 1=世界 2=公会 3=私聊 4=房间
+	Channel       uint32                 `protobuf:"varint,1,opt,name=channel,proto3" json:"channel,omitempty"` // 1 世界 2 公会 3 私聊 4 房间
 	From          uint64                 `protobuf:"varint,2,opt,name=from,proto3" json:"from,omitempty"`
 	To            uint64                 `protobuf:"varint,3,opt,name=to,proto3" json:"to,omitempty"`
 	GuildId       uint64                 `protobuf:"varint,4,opt,name=guild_id,json=guildId,proto3" json:"guild_id,omitempty"`
@@ -2239,7 +2724,7 @@ type ChatReq struct {
 
 func (x *ChatReq) Reset() {
 	*x = ChatReq{}
-	mi := &file_api_proto_msgTypes[41]
+	mi := &file_api_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2251,7 +2736,7 @@ func (x *ChatReq) String() string {
 func (*ChatReq) ProtoMessage() {}
 
 func (x *ChatReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[41]
+	mi := &file_api_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2264,7 +2749,7 @@ func (x *ChatReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatReq.ProtoReflect.Descriptor instead.
 func (*ChatReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{41}
+	return file_api_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *ChatReq) GetChannel() uint32 {
@@ -2322,7 +2807,7 @@ type ChatMsg struct {
 
 func (x *ChatMsg) Reset() {
 	*x = ChatMsg{}
-	mi := &file_api_proto_msgTypes[42]
+	mi := &file_api_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2334,7 +2819,7 @@ func (x *ChatMsg) String() string {
 func (*ChatMsg) ProtoMessage() {}
 
 func (x *ChatMsg) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[42]
+	mi := &file_api_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2347,7 +2832,7 @@ func (x *ChatMsg) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatMsg.ProtoReflect.Descriptor instead.
 func (*ChatMsg) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{42}
+	return file_api_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *ChatMsg) GetChannel() uint32 {
@@ -2401,7 +2886,7 @@ type TransferJob struct {
 
 func (x *TransferJob) Reset() {
 	*x = TransferJob{}
-	mi := &file_api_proto_msgTypes[43]
+	mi := &file_api_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2413,7 +2898,7 @@ func (x *TransferJob) String() string {
 func (*TransferJob) ProtoMessage() {}
 
 func (x *TransferJob) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[43]
+	mi := &file_api_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2426,7 +2911,7 @@ func (x *TransferJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TransferJob.ProtoReflect.Descriptor instead.
 func (*TransferJob) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{43}
+	return file_api_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *TransferJob) GetTxid() string {
@@ -2496,7 +2981,7 @@ type MailSendJob struct {
 
 func (x *MailSendJob) Reset() {
 	*x = MailSendJob{}
-	mi := &file_api_proto_msgTypes[44]
+	mi := &file_api_proto_msgTypes[53]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2508,7 +2993,7 @@ func (x *MailSendJob) String() string {
 func (*MailSendJob) ProtoMessage() {}
 
 func (x *MailSendJob) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[44]
+	mi := &file_api_proto_msgTypes[53]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2521,7 +3006,7 @@ func (x *MailSendJob) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MailSendJob.ProtoReflect.Descriptor instead.
 func (*MailSendJob) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{44}
+	return file_api_proto_rawDescGZIP(), []int{53}
 }
 
 func (x *MailSendJob) GetToUid() uint64 {
@@ -2557,7 +3042,7 @@ type HandoffReq struct {
 
 func (x *HandoffReq) Reset() {
 	*x = HandoffReq{}
-	mi := &file_api_proto_msgTypes[45]
+	mi := &file_api_proto_msgTypes[54]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2569,7 +3054,7 @@ func (x *HandoffReq) String() string {
 func (*HandoffReq) ProtoMessage() {}
 
 func (x *HandoffReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[45]
+	mi := &file_api_proto_msgTypes[54]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2582,7 +3067,7 @@ func (x *HandoffReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandoffReq.ProtoReflect.Descriptor instead.
 func (*HandoffReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{45}
+	return file_api_proto_rawDescGZIP(), []int{54}
 }
 
 func (x *HandoffReq) GetKind() string {
@@ -2623,7 +3108,7 @@ type HandoffResp struct {
 
 func (x *HandoffResp) Reset() {
 	*x = HandoffResp{}
-	mi := &file_api_proto_msgTypes[46]
+	mi := &file_api_proto_msgTypes[55]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2635,7 +3120,7 @@ func (x *HandoffResp) String() string {
 func (*HandoffResp) ProtoMessage() {}
 
 func (x *HandoffResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[46]
+	mi := &file_api_proto_msgTypes[55]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2648,7 +3133,7 @@ func (x *HandoffResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use HandoffResp.ProtoReflect.Descriptor instead.
 func (*HandoffResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{46}
+	return file_api_proto_rawDescGZIP(), []int{55}
 }
 
 func (x *HandoffResp) GetReady() bool {
@@ -2674,7 +3159,7 @@ type ShutdownReq struct {
 
 func (x *ShutdownReq) Reset() {
 	*x = ShutdownReq{}
-	mi := &file_api_proto_msgTypes[47]
+	mi := &file_api_proto_msgTypes[56]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2686,7 +3171,7 @@ func (x *ShutdownReq) String() string {
 func (*ShutdownReq) ProtoMessage() {}
 
 func (x *ShutdownReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[47]
+	mi := &file_api_proto_msgTypes[56]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2699,7 +3184,7 @@ func (x *ShutdownReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ShutdownReq.ProtoReflect.Descriptor instead.
 func (*ShutdownReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{47}
+	return file_api_proto_rawDescGZIP(), []int{56}
 }
 
 func (x *ShutdownReq) GetReason() string {
@@ -2722,7 +3207,7 @@ type WorldBossState struct {
 
 func (x *WorldBossState) Reset() {
 	*x = WorldBossState{}
-	mi := &file_api_proto_msgTypes[48]
+	mi := &file_api_proto_msgTypes[57]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2734,7 +3219,7 @@ func (x *WorldBossState) String() string {
 func (*WorldBossState) ProtoMessage() {}
 
 func (x *WorldBossState) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[48]
+	mi := &file_api_proto_msgTypes[57]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2747,7 +3232,7 @@ func (x *WorldBossState) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorldBossState.ProtoReflect.Descriptor instead.
 func (*WorldBossState) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{48}
+	return file_api_proto_rawDescGZIP(), []int{57}
 }
 
 func (x *WorldBossState) GetBossId() uint64 {
@@ -2795,7 +3280,7 @@ type WorldBossHitReq struct {
 
 func (x *WorldBossHitReq) Reset() {
 	*x = WorldBossHitReq{}
-	mi := &file_api_proto_msgTypes[49]
+	mi := &file_api_proto_msgTypes[58]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2807,7 +3292,7 @@ func (x *WorldBossHitReq) String() string {
 func (*WorldBossHitReq) ProtoMessage() {}
 
 func (x *WorldBossHitReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[49]
+	mi := &file_api_proto_msgTypes[58]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2820,7 +3305,7 @@ func (x *WorldBossHitReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorldBossHitReq.ProtoReflect.Descriptor instead.
 func (*WorldBossHitReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{49}
+	return file_api_proto_rawDescGZIP(), []int{58}
 }
 
 func (x *WorldBossHitReq) GetUid() uint64 {
@@ -2847,7 +3332,7 @@ type WorldBossHitResp struct {
 
 func (x *WorldBossHitResp) Reset() {
 	*x = WorldBossHitResp{}
-	mi := &file_api_proto_msgTypes[50]
+	mi := &file_api_proto_msgTypes[59]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2859,7 +3344,7 @@ func (x *WorldBossHitResp) String() string {
 func (*WorldBossHitResp) ProtoMessage() {}
 
 func (x *WorldBossHitResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[50]
+	mi := &file_api_proto_msgTypes[59]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2872,7 +3357,7 @@ func (x *WorldBossHitResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WorldBossHitResp.ProtoReflect.Descriptor instead.
 func (*WorldBossHitResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{50}
+	return file_api_proto_rawDescGZIP(), []int{59}
 }
 
 func (x *WorldBossHitResp) GetHpLeft() int64 {
@@ -2889,24 +3374,23 @@ func (x *WorldBossHitResp) GetKilled() bool {
 	return false
 }
 
-// Round 是一次游戏回合，从下注开始到结算结束。
+// Round 是一次游戏回合，从下注到结算。
 //
-// 免费旋转期间回合保持 OPEN；玩家断线重连后必须能取回它继续打完 ——
-// 这既是体验需求，也是 GLI-19 对 incomplete round 的硬性要求。
+// 免费旋转期间保持 OPEN。玩家断线重连后要能取回来接着打完。
 type Round struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	RoundId        uint64                 `protobuf:"varint,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	GameId         string                 `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	ConfigVersion  string                 `protobuf:"bytes,3,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"` // 结算时使用的配置版本，事后复算靠它
-	SeedHex        string                 `protobuf:"bytes,4,opt,name=seed_hex,json=seedHex,proto3" json:"seed_hex,omitempty"`                   // RNG 种子，复算靠它
+	ConfigVersion  string                 `protobuf:"bytes,3,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"` // 结算用的配置版本，复算要
+	SeedHex        string                 `protobuf:"bytes,4,opt,name=seed_hex,json=seedHex,proto3" json:"seed_hex,omitempty"`                   // RNG 种子，复算要
 	Currency       uint32                 `protobuf:"varint,5,opt,name=currency,proto3" json:"currency,omitempty"`
-	Bet            int64                  `protobuf:"varint,6,opt,name=bet,proto3" json:"bet,omitempty"`                              // 单次旋转总投注
+	Bet            int64                  `protobuf:"varint,6,opt,name=bet,proto3" json:"bet,omitempty"`                              // 单次旋转的总投注
 	TotalWin       int64                  `protobuf:"varint,7,opt,name=total_win,json=totalWin,proto3" json:"total_win,omitempty"`    // 本回合累计派彩
-	SpinIndex      uint32                 `protobuf:"varint,8,opt,name=spin_index,json=spinIndex,proto3" json:"spin_index,omitempty"` // 已进行的旋转次数（复算时要重放到这一步）
+	SpinIndex      uint32                 `protobuf:"varint,8,opt,name=spin_index,json=spinIndex,proto3" json:"spin_index,omitempty"` // 已经转了几次，复算时要重放到这一步
 	FreeSpinsLeft  uint32                 `protobuf:"varint,9,opt,name=free_spins_left,json=freeSpinsLeft,proto3" json:"free_spins_left,omitempty"`
 	FreeSpinsTotal uint32                 `protobuf:"varint,10,opt,name=free_spins_total,json=freeSpinsTotal,proto3" json:"free_spins_total,omitempty"`
 	Multiplier     uint32                 `protobuf:"varint,11,opt,name=multiplier,proto3" json:"multiplier,omitempty"`
-	State          uint32                 `protobuf:"varint,12,opt,name=state,proto3" json:"state,omitempty"` // 0=OPEN 1=SETTLED
+	State          uint32                 `protobuf:"varint,12,opt,name=state,proto3" json:"state,omitempty"` // 0 未结算 1 已结算
 	CreatedAt      int64                  `protobuf:"varint,13,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	SettledAt      int64                  `protobuf:"varint,14,opt,name=settled_at,json=settledAt,proto3" json:"settled_at,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -2915,7 +3399,7 @@ type Round struct {
 
 func (x *Round) Reset() {
 	*x = Round{}
-	mi := &file_api_proto_msgTypes[51]
+	mi := &file_api_proto_msgTypes[60]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2927,7 +3411,7 @@ func (x *Round) String() string {
 func (*Round) ProtoMessage() {}
 
 func (x *Round) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[51]
+	mi := &file_api_proto_msgTypes[60]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2940,7 +3424,7 @@ func (x *Round) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Round.ProtoReflect.Descriptor instead.
 func (*Round) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{51}
+	return file_api_proto_rawDescGZIP(), []int{60}
 }
 
 func (x *Round) GetRoundId() uint64 {
@@ -3044,16 +3528,16 @@ func (x *Round) GetSettledAt() int64 {
 type SpinReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	GameId        string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
-	Bet           int64                  `protobuf:"varint,2,opt,name=bet,proto3" json:"bet,omitempty"` // 免费旋转时忽略，沿用回合内的下注额
+	Bet           int64                  `protobuf:"varint,2,opt,name=bet,proto3" json:"bet,omitempty"` // 免费旋转时忽略，用回合里那个
 	Currency      uint32                 `protobuf:"varint,3,opt,name=currency,proto3" json:"currency,omitempty"`
-	ClientId      string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"` // 客户端幂等号：重发同一次 spin 不得重复扣费
+	ClientId      string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"` // 客户端幂等号，重发同一次 spin 不能重复扣费
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *SpinReq) Reset() {
 	*x = SpinReq{}
-	mi := &file_api_proto_msgTypes[52]
+	mi := &file_api_proto_msgTypes[61]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3065,7 +3549,7 @@ func (x *SpinReq) String() string {
 func (*SpinReq) ProtoMessage() {}
 
 func (x *SpinReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[52]
+	mi := &file_api_proto_msgTypes[61]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3078,7 +3562,7 @@ func (x *SpinReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpinReq.ProtoReflect.Descriptor instead.
 func (*SpinReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{52}
+	return file_api_proto_rawDescGZIP(), []int{61}
 }
 
 func (x *SpinReq) GetGameId() string {
@@ -3121,7 +3605,7 @@ type LineWin struct {
 
 func (x *LineWin) Reset() {
 	*x = LineWin{}
-	mi := &file_api_proto_msgTypes[53]
+	mi := &file_api_proto_msgTypes[62]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3133,7 +3617,7 @@ func (x *LineWin) String() string {
 func (*LineWin) ProtoMessage() {}
 
 func (x *LineWin) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[53]
+	mi := &file_api_proto_msgTypes[62]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3146,7 +3630,7 @@ func (x *LineWin) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LineWin.ProtoReflect.Descriptor instead.
 func (*LineWin) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{53}
+	return file_api_proto_rawDescGZIP(), []int{62}
 }
 
 func (x *LineWin) GetLine() uint32 {
@@ -3180,23 +3664,23 @@ func (x *LineWin) GetPayout() int64 {
 type SpinResp struct {
 	state            protoimpl.MessageState `protogen:"open.v1"`
 	Round            *Round                 `protobuf:"bytes,1,opt,name=round,proto3" json:"round,omitempty"`
-	Grid             []uint32               `protobuf:"varint,2,rep,packed,name=grid,proto3" json:"grid,omitempty"`   // 按列展开：reel0 行0..N, reel1 行0..N ...
-	Stops            []uint32               `protobuf:"varint,3,rep,packed,name=stops,proto3" json:"stops,omitempty"` // 各轴停止位置，复算校验用
+	Grid             []uint32               `protobuf:"varint,2,rep,packed,name=grid,proto3" json:"grid,omitempty"`   // 按列展开：reel0 各行、reel1 各行……
+	Stops            []uint32               `protobuf:"varint,3,rep,packed,name=stops,proto3" json:"stops,omitempty"` // 各轴停位，复算时对照
 	Lines            []*LineWin             `protobuf:"bytes,4,rep,name=lines,proto3" json:"lines,omitempty"`
 	ScatterCount     uint32                 `protobuf:"varint,5,opt,name=scatter_count,json=scatterCount,proto3" json:"scatter_count,omitempty"`
-	SpinWin          int64                  `protobuf:"varint,6,opt,name=spin_win,json=spinWin,proto3" json:"spin_win,omitempty"` // 本次旋转派彩（含倍数）
+	SpinWin          int64                  `protobuf:"varint,6,opt,name=spin_win,json=spinWin,proto3" json:"spin_win,omitempty"` // 本次派彩，已含倍数
 	Balance          int64                  `protobuf:"varint,7,opt,name=balance,proto3" json:"balance,omitempty"`
 	FreeSpinsAwarded uint32                 `protobuf:"varint,8,opt,name=free_spins_awarded,json=freeSpinsAwarded,proto3" json:"free_spins_awarded,omitempty"`
 	RoundFinished    bool                   `protobuf:"varint,9,opt,name=round_finished,json=roundFinished,proto3" json:"round_finished,omitempty"`
-	JackpotWin       int64                  `protobuf:"varint,10,opt,name=jackpot_win,json=jackpotWin,proto3" json:"jackpot_win,omitempty"` // 非 0 表示中了奖池
-	Duplicate        bool                   `protobuf:"varint,11,opt,name=duplicate,proto3" json:"duplicate,omitempty"`                     // 重发的 spin，返回的是首次结果
+	JackpotWin       int64                  `protobuf:"varint,10,opt,name=jackpot_win,json=jackpotWin,proto3" json:"jackpot_win,omitempty"` // 非 0 表示中奖池了
+	Duplicate        bool                   `protobuf:"varint,11,opt,name=duplicate,proto3" json:"duplicate,omitempty"`                     // 重发的 spin，返回的是第一次的结果
 	unknownFields    protoimpl.UnknownFields
 	sizeCache        protoimpl.SizeCache
 }
 
 func (x *SpinResp) Reset() {
 	*x = SpinResp{}
-	mi := &file_api_proto_msgTypes[54]
+	mi := &file_api_proto_msgTypes[63]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3208,7 +3692,7 @@ func (x *SpinResp) String() string {
 func (*SpinResp) ProtoMessage() {}
 
 func (x *SpinResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[54]
+	mi := &file_api_proto_msgTypes[63]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3221,7 +3705,7 @@ func (x *SpinResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SpinResp.ProtoReflect.Descriptor instead.
 func (*SpinResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{54}
+	return file_api_proto_rawDescGZIP(), []int{63}
 }
 
 func (x *SpinResp) GetRound() *Round {
@@ -3309,7 +3793,7 @@ type RoundStateReq struct {
 
 func (x *RoundStateReq) Reset() {
 	*x = RoundStateReq{}
-	mi := &file_api_proto_msgTypes[55]
+	mi := &file_api_proto_msgTypes[64]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3321,7 +3805,7 @@ func (x *RoundStateReq) String() string {
 func (*RoundStateReq) ProtoMessage() {}
 
 func (x *RoundStateReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[55]
+	mi := &file_api_proto_msgTypes[64]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3334,7 +3818,7 @@ func (x *RoundStateReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoundStateReq.ProtoReflect.Descriptor instead.
 func (*RoundStateReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{55}
+	return file_api_proto_rawDescGZIP(), []int{64}
 }
 
 type RoundStateResp struct {
@@ -3347,7 +3831,7 @@ type RoundStateResp struct {
 
 func (x *RoundStateResp) Reset() {
 	*x = RoundStateResp{}
-	mi := &file_api_proto_msgTypes[56]
+	mi := &file_api_proto_msgTypes[65]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3359,7 +3843,7 @@ func (x *RoundStateResp) String() string {
 func (*RoundStateResp) ProtoMessage() {}
 
 func (x *RoundStateResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[56]
+	mi := &file_api_proto_msgTypes[65]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3372,7 +3856,7 @@ func (x *RoundStateResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RoundStateResp.ProtoReflect.Descriptor instead.
 func (*RoundStateResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{56}
+	return file_api_proto_rawDescGZIP(), []int{65}
 }
 
 func (x *RoundStateResp) GetRound() *Round {
@@ -3400,7 +3884,7 @@ type GachaReq struct {
 
 func (x *GachaReq) Reset() {
 	*x = GachaReq{}
-	mi := &file_api_proto_msgTypes[57]
+	mi := &file_api_proto_msgTypes[66]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3412,7 +3896,7 @@ func (x *GachaReq) String() string {
 func (*GachaReq) ProtoMessage() {}
 
 func (x *GachaReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[57]
+	mi := &file_api_proto_msgTypes[66]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3425,7 +3909,7 @@ func (x *GachaReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GachaReq.ProtoReflect.Descriptor instead.
 func (*GachaReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{57}
+	return file_api_proto_rawDescGZIP(), []int{66}
 }
 
 func (x *GachaReq) GetPoolId() string {
@@ -3454,14 +3938,14 @@ type GachaDrop struct {
 	TplId         uint32                 `protobuf:"varint,1,opt,name=tpl_id,json=tplId,proto3" json:"tpl_id,omitempty"`
 	Rarity        uint32                 `protobuf:"varint,2,opt,name=rarity,proto3" json:"rarity,omitempty"`
 	Count         int64                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
-	ByPity        bool                   `protobuf:"varint,4,opt,name=by_pity,json=byPity,proto3" json:"by_pity,omitempty"` // 是否由保底触发
+	ByPity        bool                   `protobuf:"varint,4,opt,name=by_pity,json=byPity,proto3" json:"by_pity,omitempty"` // 是不是保底给的
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GachaDrop) Reset() {
 	*x = GachaDrop{}
-	mi := &file_api_proto_msgTypes[58]
+	mi := &file_api_proto_msgTypes[67]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3473,7 +3957,7 @@ func (x *GachaDrop) String() string {
 func (*GachaDrop) ProtoMessage() {}
 
 func (x *GachaDrop) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[58]
+	mi := &file_api_proto_msgTypes[67]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3486,7 +3970,7 @@ func (x *GachaDrop) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GachaDrop.ProtoReflect.Descriptor instead.
 func (*GachaDrop) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{58}
+	return file_api_proto_rawDescGZIP(), []int{67}
 }
 
 func (x *GachaDrop) GetTplId() uint32 {
@@ -3520,7 +4004,7 @@ func (x *GachaDrop) GetByPity() bool {
 type GachaResp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Drops         []*GachaDrop           `protobuf:"bytes,1,rep,name=drops,proto3" json:"drops,omitempty"`
-	PityCounter   uint32                 `protobuf:"varint,2,opt,name=pity_counter,json=pityCounter,proto3" json:"pity_counter,omitempty"` // 距离下次保底还差多少
+	PityCounter   uint32                 `protobuf:"varint,2,opt,name=pity_counter,json=pityCounter,proto3" json:"pity_counter,omitempty"` // 离下次保底还差几抽
 	Balance       int64                  `protobuf:"varint,3,opt,name=balance,proto3" json:"balance,omitempty"`
 	Duplicate     bool                   `protobuf:"varint,4,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -3529,7 +4013,7 @@ type GachaResp struct {
 
 func (x *GachaResp) Reset() {
 	*x = GachaResp{}
-	mi := &file_api_proto_msgTypes[59]
+	mi := &file_api_proto_msgTypes[68]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3541,7 +4025,7 @@ func (x *GachaResp) String() string {
 func (*GachaResp) ProtoMessage() {}
 
 func (x *GachaResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[59]
+	mi := &file_api_proto_msgTypes[68]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3554,7 +4038,7 @@ func (x *GachaResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GachaResp.ProtoReflect.Descriptor instead.
 func (*GachaResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{59}
+	return file_api_proto_rawDescGZIP(), []int{68}
 }
 
 func (x *GachaResp) GetDrops() []*GachaDrop {
@@ -3594,7 +4078,7 @@ type JackpotInfoReq struct {
 
 func (x *JackpotInfoReq) Reset() {
 	*x = JackpotInfoReq{}
-	mi := &file_api_proto_msgTypes[60]
+	mi := &file_api_proto_msgTypes[69]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3606,7 +4090,7 @@ func (x *JackpotInfoReq) String() string {
 func (*JackpotInfoReq) ProtoMessage() {}
 
 func (x *JackpotInfoReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[60]
+	mi := &file_api_proto_msgTypes[69]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3619,7 +4103,7 @@ func (x *JackpotInfoReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JackpotInfoReq.ProtoReflect.Descriptor instead.
 func (*JackpotInfoReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{60}
+	return file_api_proto_rawDescGZIP(), []int{69}
 }
 
 func (x *JackpotInfoReq) GetPoolId() string {
@@ -3633,14 +4117,14 @@ type JackpotInfoResp struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
 	Amount        int64                  `protobuf:"varint,2,opt,name=amount,proto3" json:"amount,omitempty"`
-	Seed          int64                  `protobuf:"varint,3,opt,name=seed,proto3" json:"seed,omitempty"` // 底注（清零后的起始值）
+	Seed          int64                  `protobuf:"varint,3,opt,name=seed,proto3" json:"seed,omitempty"` // 底注，清零后回到这个值
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *JackpotInfoResp) Reset() {
 	*x = JackpotInfoResp{}
-	mi := &file_api_proto_msgTypes[61]
+	mi := &file_api_proto_msgTypes[70]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3652,7 +4136,7 @@ func (x *JackpotInfoResp) String() string {
 func (*JackpotInfoResp) ProtoMessage() {}
 
 func (x *JackpotInfoResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[61]
+	mi := &file_api_proto_msgTypes[70]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3665,7 +4149,7 @@ func (x *JackpotInfoResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JackpotInfoResp.ProtoReflect.Descriptor instead.
 func (*JackpotInfoResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{61}
+	return file_api_proto_rawDescGZIP(), []int{70}
 }
 
 func (x *JackpotInfoResp) GetPoolId() string {
@@ -3702,7 +4186,7 @@ type JackpotClaimReq struct {
 
 func (x *JackpotClaimReq) Reset() {
 	*x = JackpotClaimReq{}
-	mi := &file_api_proto_msgTypes[62]
+	mi := &file_api_proto_msgTypes[71]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3714,7 +4198,7 @@ func (x *JackpotClaimReq) String() string {
 func (*JackpotClaimReq) ProtoMessage() {}
 
 func (x *JackpotClaimReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[62]
+	mi := &file_api_proto_msgTypes[71]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3727,7 +4211,7 @@ func (x *JackpotClaimReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JackpotClaimReq.ProtoReflect.Descriptor instead.
 func (*JackpotClaimReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{62}
+	return file_api_proto_rawDescGZIP(), []int{71}
 }
 
 func (x *JackpotClaimReq) GetPoolId() string {
@@ -3775,7 +4259,7 @@ type JackpotClaimResp struct {
 
 func (x *JackpotClaimResp) Reset() {
 	*x = JackpotClaimResp{}
-	mi := &file_api_proto_msgTypes[63]
+	mi := &file_api_proto_msgTypes[72]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3787,7 +4271,7 @@ func (x *JackpotClaimResp) String() string {
 func (*JackpotClaimResp) ProtoMessage() {}
 
 func (x *JackpotClaimResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[63]
+	mi := &file_api_proto_msgTypes[72]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3800,7 +4284,7 @@ func (x *JackpotClaimResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use JackpotClaimResp.ProtoReflect.Descriptor instead.
 func (*JackpotClaimResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{63}
+	return file_api_proto_rawDescGZIP(), []int{72}
 }
 
 func (x *JackpotClaimResp) GetAmount() int64 {
@@ -3825,7 +4309,7 @@ type RGStatusReq struct {
 
 func (x *RGStatusReq) Reset() {
 	*x = RGStatusReq{}
-	mi := &file_api_proto_msgTypes[64]
+	mi := &file_api_proto_msgTypes[73]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3837,7 +4321,7 @@ func (x *RGStatusReq) String() string {
 func (*RGStatusReq) ProtoMessage() {}
 
 func (x *RGStatusReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[64]
+	mi := &file_api_proto_msgTypes[73]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3850,7 +4334,7 @@ func (x *RGStatusReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RGStatusReq.ProtoReflect.Descriptor instead.
 func (*RGStatusReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{64}
+	return file_api_proto_rawDescGZIP(), []int{73}
 }
 
 type RGStatusResp struct {
@@ -3870,7 +4354,7 @@ type RGStatusResp struct {
 
 func (x *RGStatusResp) Reset() {
 	*x = RGStatusResp{}
-	mi := &file_api_proto_msgTypes[65]
+	mi := &file_api_proto_msgTypes[74]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3882,7 +4366,7 @@ func (x *RGStatusResp) String() string {
 func (*RGStatusResp) ProtoMessage() {}
 
 func (x *RGStatusResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[65]
+	mi := &file_api_proto_msgTypes[74]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3895,7 +4379,7 @@ func (x *RGStatusResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RGStatusResp.ProtoReflect.Descriptor instead.
 func (*RGStatusResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{65}
+	return file_api_proto_rawDescGZIP(), []int{74}
 }
 
 func (x *RGStatusResp) GetDailyBet() int64 {
@@ -3974,7 +4458,7 @@ type GMSetRGReq struct {
 
 func (x *GMSetRGReq) Reset() {
 	*x = GMSetRGReq{}
-	mi := &file_api_proto_msgTypes[66]
+	mi := &file_api_proto_msgTypes[75]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3986,7 +4470,7 @@ func (x *GMSetRGReq) String() string {
 func (*GMSetRGReq) ProtoMessage() {}
 
 func (x *GMSetRGReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[66]
+	mi := &file_api_proto_msgTypes[75]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3999,7 +4483,7 @@ func (x *GMSetRGReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GMSetRGReq.ProtoReflect.Descriptor instead.
 func (*GMSetRGReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{66}
+	return file_api_proto_rawDescGZIP(), []int{75}
 }
 
 func (x *GMSetRGReq) GetUid() uint64 {
@@ -4048,7 +4532,7 @@ type PurchaseReceipt struct {
 
 func (x *PurchaseReceipt) Reset() {
 	*x = PurchaseReceipt{}
-	mi := &file_api_proto_msgTypes[67]
+	mi := &file_api_proto_msgTypes[76]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4060,7 +4544,7 @@ func (x *PurchaseReceipt) String() string {
 func (*PurchaseReceipt) ProtoMessage() {}
 
 func (x *PurchaseReceipt) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[67]
+	mi := &file_api_proto_msgTypes[76]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4073,7 +4557,7 @@ func (x *PurchaseReceipt) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PurchaseReceipt.ProtoReflect.Descriptor instead.
 func (*PurchaseReceipt) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{67}
+	return file_api_proto_rawDescGZIP(), []int{76}
 }
 
 func (x *PurchaseReceipt) GetChannel() string {
@@ -4104,14 +4588,14 @@ type GMGrantReq struct {
 	Amount        int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
 	Items         []*Attachment          `protobuf:"bytes,4,rep,name=items,proto3" json:"items,omitempty"`
 	Reason        string                 `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
-	Ticket        string                 `protobuf:"bytes,6,opt,name=ticket,proto3" json:"ticket,omitempty"` // 工单号，同时用作幂等键
+	Ticket        string                 `protobuf:"bytes,6,opt,name=ticket,proto3" json:"ticket,omitempty"` // 工单号，兼作幂等键
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GMGrantReq) Reset() {
 	*x = GMGrantReq{}
-	mi := &file_api_proto_msgTypes[68]
+	mi := &file_api_proto_msgTypes[77]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4123,7 +4607,7 @@ func (x *GMGrantReq) String() string {
 func (*GMGrantReq) ProtoMessage() {}
 
 func (x *GMGrantReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[68]
+	mi := &file_api_proto_msgTypes[77]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4136,7 +4620,7 @@ func (x *GMGrantReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GMGrantReq.ProtoReflect.Descriptor instead.
 func (*GMGrantReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{68}
+	return file_api_proto_rawDescGZIP(), []int{77}
 }
 
 func (x *GMGrantReq) GetUid() uint64 {
@@ -4184,14 +4668,14 @@ func (x *GMGrantReq) GetTicket() string {
 type GMQueryReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
-	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"` // 返回最近多少条流水
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"` // 返回最近几条流水
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GMQueryReq) Reset() {
 	*x = GMQueryReq{}
-	mi := &file_api_proto_msgTypes[69]
+	mi := &file_api_proto_msgTypes[78]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4203,7 +4687,7 @@ func (x *GMQueryReq) String() string {
 func (*GMQueryReq) ProtoMessage() {}
 
 func (x *GMQueryReq) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[69]
+	mi := &file_api_proto_msgTypes[78]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4216,7 +4700,7 @@ func (x *GMQueryReq) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GMQueryReq.ProtoReflect.Descriptor instead.
 func (*GMQueryReq) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{69}
+	return file_api_proto_rawDescGZIP(), []int{78}
 }
 
 func (x *GMQueryReq) GetUid() uint64 {
@@ -4239,7 +4723,7 @@ type LedgerEntry struct {
 	Uid           uint64                 `protobuf:"varint,2,opt,name=uid,proto3" json:"uid,omitempty"`
 	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
 	Currency      uint32                 `protobuf:"varint,4,opt,name=currency,proto3" json:"currency,omitempty"`
-	Amount        int64                  `protobuf:"varint,5,opt,name=amount,proto3" json:"amount,omitempty"`   // 正=入账 负=出账
+	Amount        int64                  `protobuf:"varint,5,opt,name=amount,proto3" json:"amount,omitempty"`   // 正入负出
 	Balance       int64                  `protobuf:"varint,6,opt,name=balance,proto3" json:"balance,omitempty"` // 变动后余额
 	RoundId       uint64                 `protobuf:"varint,7,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
 	GameId        string                 `protobuf:"bytes,8,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
@@ -4252,7 +4736,7 @@ type LedgerEntry struct {
 
 func (x *LedgerEntry) Reset() {
 	*x = LedgerEntry{}
-	mi := &file_api_proto_msgTypes[70]
+	mi := &file_api_proto_msgTypes[79]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4264,7 +4748,7 @@ func (x *LedgerEntry) String() string {
 func (*LedgerEntry) ProtoMessage() {}
 
 func (x *LedgerEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[70]
+	mi := &file_api_proto_msgTypes[79]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4277,7 +4761,7 @@ func (x *LedgerEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LedgerEntry.ProtoReflect.Descriptor instead.
 func (*LedgerEntry) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{70}
+	return file_api_proto_rawDescGZIP(), []int{79}
 }
 
 func (x *LedgerEntry) GetEntryId() string {
@@ -4368,7 +4852,7 @@ type GMQueryResp struct {
 
 func (x *GMQueryResp) Reset() {
 	*x = GMQueryResp{}
-	mi := &file_api_proto_msgTypes[71]
+	mi := &file_api_proto_msgTypes[80]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4380,7 +4864,7 @@ func (x *GMQueryResp) String() string {
 func (*GMQueryResp) ProtoMessage() {}
 
 func (x *GMQueryResp) ProtoReflect() protoreflect.Message {
-	mi := &file_api_proto_msgTypes[71]
+	mi := &file_api_proto_msgTypes[80]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4393,7 +4877,7 @@ func (x *GMQueryResp) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GMQueryResp.ProtoReflect.Descriptor instead.
 func (*GMQueryResp) Descriptor() ([]byte, []int) {
-	return file_api_proto_rawDescGZIP(), []int{71}
+	return file_api_proto_rawDescGZIP(), []int{80}
 }
 
 func (x *GMQueryResp) GetBase() *PlayerBase {
@@ -4421,12 +4905,49 @@ var File_api_proto protoreflect.FileDescriptor
 
 const file_api_proto_rawDesc = "" +
 	"\n" +
-	"\tapi.proto\x12\agame.v1\x1a\fplayer.proto\"d\n" +
+	"\tapi.proto\x12\agame.v1\x1a\fplayer.proto\"\xbb\x01\n" +
 	"\bLoginReq\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x12\x17\n" +
 	"\agate_id\x18\x03 \x01(\tR\x06gateId\x12\x17\n" +
-	"\aconn_id\x18\x04 \x01(\x04R\x06connId\"\xd3\x01\n" +
+	"\aconn_id\x18\x04 \x01(\x04R\x06connId\x12\x18\n" +
+	"\achannel\x18\x05 \x01(\tR\achannel\x12\x1e\n" +
+	"\n" +
+	"credential\x18\x06 \x01(\tR\n" +
+	"credential\x12\x1b\n" +
+	"\tdevice_id\x18\a \x01(\tR\bdeviceId\"g\n" +
+	"\x0eAuthChannelReq\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x1e\n" +
+	"\n" +
+	"credential\x18\x02 \x01(\tR\n" +
+	"credential\x12\x1b\n" +
+	"\tdevice_id\x18\x03 \x01(\tR\bdeviceId\"\x92\x01\n" +
+	"\x0fAuthChannelResp\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
+	"\x05token\x18\x02 \x01(\tR\x05token\x12\x1d\n" +
+	"\n" +
+	"expires_at\x18\x03 \x01(\x03R\texpiresAt\x12\x1f\n" +
+	"\vfirst_login\x18\x04 \x01(\bR\n" +
+	"firstLogin\x12\x17\n" +
+	"\aopen_id\x18\x05 \x01(\tR\x06openId\"J\n" +
+	"\x0eBindChannelReq\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x1e\n" +
+	"\n" +
+	"credential\x18\x02 \x01(\tR\n" +
+	"credential\"?\n" +
+	"\x0fBindChannelResp\x12,\n" +
+	"\bbindings\x18\x01 \x03(\v2\x10.game.v1.BindingR\bbindings\",\n" +
+	"\x10UnbindChannelReq\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\"A\n" +
+	"\x11UnbindChannelResp\x12,\n" +
+	"\bbindings\x18\x01 \x03(\v2\x10.game.v1.BindingR\bbindings\"\x11\n" +
+	"\x0fListBindingsReq\"@\n" +
+	"\x10ListBindingsResp\x12,\n" +
+	"\bbindings\x18\x01 \x03(\v2\x10.game.v1.BindingR\bbindings\"W\n" +
+	"\aBinding\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x17\n" +
+	"\aopen_id\x18\x02 \x01(\tR\x06openId\x12\x19\n" +
+	"\bbound_at\x18\x03 \x01(\x03R\aboundAt\"\xd3\x01\n" +
 	"\tLoginResp\x12'\n" +
 	"\x04base\x18\x01 \x01(\v2\x13.game.v1.PlayerBaseR\x04base\x12$\n" +
 	"\x03bag\x18\x02 \x01(\v2\x12.game.v1.PlayerBagR\x03bag\x12*\n" +
@@ -4764,121 +5285,133 @@ func file_api_proto_rawDescGZIP() []byte {
 	return file_api_proto_rawDescData
 }
 
-var file_api_proto_msgTypes = make([]protoimpl.MessageInfo, 73)
+var file_api_proto_msgTypes = make([]protoimpl.MessageInfo, 82)
 var file_api_proto_goTypes = []any{
-	(*LoginReq)(nil),         // 0: game.v1.LoginReq
-	(*LoginResp)(nil),        // 1: game.v1.LoginResp
-	(*LogoutReq)(nil),        // 2: game.v1.LogoutReq
-	(*KickNotify)(nil),       // 3: game.v1.KickNotify
-	(*HeartbeatReq)(nil),     // 4: game.v1.HeartbeatReq
-	(*HeartbeatResp)(nil),    // 5: game.v1.HeartbeatResp
-	(*AddCurrencyReq)(nil),   // 6: game.v1.AddCurrencyReq
-	(*AddCurrencyResp)(nil),  // 7: game.v1.AddCurrencyResp
-	(*AddItemReq)(nil),       // 8: game.v1.AddItemReq
-	(*AddItemResp)(nil),      // 9: game.v1.AddItemResp
-	(*UseItemReq)(nil),       // 10: game.v1.UseItemReq
-	(*UseItemResp)(nil),      // 11: game.v1.UseItemResp
-	(*GetBagReq)(nil),        // 12: game.v1.GetBagReq
-	(*GetBagResp)(nil),       // 13: game.v1.GetBagResp
-	(*AcceptQuestReq)(nil),   // 14: game.v1.AcceptQuestReq
-	(*QuestProgressReq)(nil), // 15: game.v1.QuestProgressReq
-	(*QuestResp)(nil),        // 16: game.v1.QuestResp
-	(*GetProfileReq)(nil),    // 17: game.v1.GetProfileReq
-	(*GetProfileResp)(nil),   // 18: game.v1.GetProfileResp
-	(*AddFriendReq)(nil),     // 19: game.v1.AddFriendReq
-	(*GetSocialReq)(nil),     // 20: game.v1.GetSocialReq
-	(*GetSocialResp)(nil),    // 21: game.v1.GetSocialResp
-	(*GetMailReq)(nil),       // 22: game.v1.GetMailReq
-	(*GetMailResp)(nil),      // 23: game.v1.GetMailResp
-	(*ClaimMailReq)(nil),     // 24: game.v1.ClaimMailReq
-	(*ClaimMailResp)(nil),    // 25: game.v1.ClaimMailResp
-	(*PurchaseReq)(nil),      // 26: game.v1.PurchaseReq
-	(*PurchaseResp)(nil),     // 27: game.v1.PurchaseResp
-	(*CreateRoomReq)(nil),    // 28: game.v1.CreateRoomReq
-	(*CreateRoomResp)(nil),   // 29: game.v1.CreateRoomResp
-	(*JoinRoomReq)(nil),      // 30: game.v1.JoinRoomReq
-	(*LeaveRoomReq)(nil),     // 31: game.v1.LeaveRoomReq
-	(*RoomOpReq)(nil),        // 32: game.v1.RoomOpReq
-	(*RoomSnapshot)(nil),     // 33: game.v1.RoomSnapshot
-	(*RoomBroadcast)(nil),    // 34: game.v1.RoomBroadcast
-	(*MultiPush)(nil),        // 35: game.v1.MultiPush
-	(*BattleResult)(nil),     // 36: game.v1.BattleResult
-	(*MatchEnqueueReq)(nil),  // 37: game.v1.MatchEnqueueReq
-	(*MatchCancelReq)(nil),   // 38: game.v1.MatchCancelReq
-	(*MatchAck)(nil),         // 39: game.v1.MatchAck
-	(*MatchFound)(nil),       // 40: game.v1.MatchFound
-	(*ChatReq)(nil),          // 41: game.v1.ChatReq
-	(*ChatMsg)(nil),          // 42: game.v1.ChatMsg
-	(*TransferJob)(nil),      // 43: game.v1.TransferJob
-	(*MailSendJob)(nil),      // 44: game.v1.MailSendJob
-	(*HandoffReq)(nil),       // 45: game.v1.HandoffReq
-	(*HandoffResp)(nil),      // 46: game.v1.HandoffResp
-	(*ShutdownReq)(nil),      // 47: game.v1.ShutdownReq
-	(*WorldBossState)(nil),   // 48: game.v1.WorldBossState
-	(*WorldBossHitReq)(nil),  // 49: game.v1.WorldBossHitReq
-	(*WorldBossHitResp)(nil), // 50: game.v1.WorldBossHitResp
-	(*Round)(nil),            // 51: game.v1.Round
-	(*SpinReq)(nil),          // 52: game.v1.SpinReq
-	(*LineWin)(nil),          // 53: game.v1.LineWin
-	(*SpinResp)(nil),         // 54: game.v1.SpinResp
-	(*RoundStateReq)(nil),    // 55: game.v1.RoundStateReq
-	(*RoundStateResp)(nil),   // 56: game.v1.RoundStateResp
-	(*GachaReq)(nil),         // 57: game.v1.GachaReq
-	(*GachaDrop)(nil),        // 58: game.v1.GachaDrop
-	(*GachaResp)(nil),        // 59: game.v1.GachaResp
-	(*JackpotInfoReq)(nil),   // 60: game.v1.JackpotInfoReq
-	(*JackpotInfoResp)(nil),  // 61: game.v1.JackpotInfoResp
-	(*JackpotClaimReq)(nil),  // 62: game.v1.JackpotClaimReq
-	(*JackpotClaimResp)(nil), // 63: game.v1.JackpotClaimResp
-	(*RGStatusReq)(nil),      // 64: game.v1.RGStatusReq
-	(*RGStatusResp)(nil),     // 65: game.v1.RGStatusResp
-	(*GMSetRGReq)(nil),       // 66: game.v1.GMSetRGReq
-	(*PurchaseReceipt)(nil),  // 67: game.v1.PurchaseReceipt
-	(*GMGrantReq)(nil),       // 68: game.v1.GMGrantReq
-	(*GMQueryReq)(nil),       // 69: game.v1.GMQueryReq
-	(*LedgerEntry)(nil),      // 70: game.v1.LedgerEntry
-	(*GMQueryResp)(nil),      // 71: game.v1.GMQueryResp
-	nil,                      // 72: game.v1.BattleResult.ScoreEntry
-	(*PlayerBase)(nil),       // 73: game.v1.PlayerBase
-	(*PlayerBag)(nil),        // 74: game.v1.PlayerBag
-	(*PlayerQuest)(nil),      // 75: game.v1.PlayerQuest
-	(*Item)(nil),             // 76: game.v1.Item
-	(*Quest)(nil),            // 77: game.v1.Quest
-	(*Profile)(nil),          // 78: game.v1.Profile
-	(*PlayerSocial)(nil),     // 79: game.v1.PlayerSocial
-	(*PlayerMail)(nil),       // 80: game.v1.PlayerMail
-	(*Attachment)(nil),       // 81: game.v1.Attachment
-	(*Mail)(nil),             // 82: game.v1.Mail
+	(*LoginReq)(nil),          // 0: game.v1.LoginReq
+	(*AuthChannelReq)(nil),    // 1: game.v1.AuthChannelReq
+	(*AuthChannelResp)(nil),   // 2: game.v1.AuthChannelResp
+	(*BindChannelReq)(nil),    // 3: game.v1.BindChannelReq
+	(*BindChannelResp)(nil),   // 4: game.v1.BindChannelResp
+	(*UnbindChannelReq)(nil),  // 5: game.v1.UnbindChannelReq
+	(*UnbindChannelResp)(nil), // 6: game.v1.UnbindChannelResp
+	(*ListBindingsReq)(nil),   // 7: game.v1.ListBindingsReq
+	(*ListBindingsResp)(nil),  // 8: game.v1.ListBindingsResp
+	(*Binding)(nil),           // 9: game.v1.Binding
+	(*LoginResp)(nil),         // 10: game.v1.LoginResp
+	(*LogoutReq)(nil),         // 11: game.v1.LogoutReq
+	(*KickNotify)(nil),        // 12: game.v1.KickNotify
+	(*HeartbeatReq)(nil),      // 13: game.v1.HeartbeatReq
+	(*HeartbeatResp)(nil),     // 14: game.v1.HeartbeatResp
+	(*AddCurrencyReq)(nil),    // 15: game.v1.AddCurrencyReq
+	(*AddCurrencyResp)(nil),   // 16: game.v1.AddCurrencyResp
+	(*AddItemReq)(nil),        // 17: game.v1.AddItemReq
+	(*AddItemResp)(nil),       // 18: game.v1.AddItemResp
+	(*UseItemReq)(nil),        // 19: game.v1.UseItemReq
+	(*UseItemResp)(nil),       // 20: game.v1.UseItemResp
+	(*GetBagReq)(nil),         // 21: game.v1.GetBagReq
+	(*GetBagResp)(nil),        // 22: game.v1.GetBagResp
+	(*AcceptQuestReq)(nil),    // 23: game.v1.AcceptQuestReq
+	(*QuestProgressReq)(nil),  // 24: game.v1.QuestProgressReq
+	(*QuestResp)(nil),         // 25: game.v1.QuestResp
+	(*GetProfileReq)(nil),     // 26: game.v1.GetProfileReq
+	(*GetProfileResp)(nil),    // 27: game.v1.GetProfileResp
+	(*AddFriendReq)(nil),      // 28: game.v1.AddFriendReq
+	(*GetSocialReq)(nil),      // 29: game.v1.GetSocialReq
+	(*GetSocialResp)(nil),     // 30: game.v1.GetSocialResp
+	(*GetMailReq)(nil),        // 31: game.v1.GetMailReq
+	(*GetMailResp)(nil),       // 32: game.v1.GetMailResp
+	(*ClaimMailReq)(nil),      // 33: game.v1.ClaimMailReq
+	(*ClaimMailResp)(nil),     // 34: game.v1.ClaimMailResp
+	(*PurchaseReq)(nil),       // 35: game.v1.PurchaseReq
+	(*PurchaseResp)(nil),      // 36: game.v1.PurchaseResp
+	(*CreateRoomReq)(nil),     // 37: game.v1.CreateRoomReq
+	(*CreateRoomResp)(nil),    // 38: game.v1.CreateRoomResp
+	(*JoinRoomReq)(nil),       // 39: game.v1.JoinRoomReq
+	(*LeaveRoomReq)(nil),      // 40: game.v1.LeaveRoomReq
+	(*RoomOpReq)(nil),         // 41: game.v1.RoomOpReq
+	(*RoomSnapshot)(nil),      // 42: game.v1.RoomSnapshot
+	(*RoomBroadcast)(nil),     // 43: game.v1.RoomBroadcast
+	(*MultiPush)(nil),         // 44: game.v1.MultiPush
+	(*BattleResult)(nil),      // 45: game.v1.BattleResult
+	(*MatchEnqueueReq)(nil),   // 46: game.v1.MatchEnqueueReq
+	(*MatchCancelReq)(nil),    // 47: game.v1.MatchCancelReq
+	(*MatchAck)(nil),          // 48: game.v1.MatchAck
+	(*MatchFound)(nil),        // 49: game.v1.MatchFound
+	(*ChatReq)(nil),           // 50: game.v1.ChatReq
+	(*ChatMsg)(nil),           // 51: game.v1.ChatMsg
+	(*TransferJob)(nil),       // 52: game.v1.TransferJob
+	(*MailSendJob)(nil),       // 53: game.v1.MailSendJob
+	(*HandoffReq)(nil),        // 54: game.v1.HandoffReq
+	(*HandoffResp)(nil),       // 55: game.v1.HandoffResp
+	(*ShutdownReq)(nil),       // 56: game.v1.ShutdownReq
+	(*WorldBossState)(nil),    // 57: game.v1.WorldBossState
+	(*WorldBossHitReq)(nil),   // 58: game.v1.WorldBossHitReq
+	(*WorldBossHitResp)(nil),  // 59: game.v1.WorldBossHitResp
+	(*Round)(nil),             // 60: game.v1.Round
+	(*SpinReq)(nil),           // 61: game.v1.SpinReq
+	(*LineWin)(nil),           // 62: game.v1.LineWin
+	(*SpinResp)(nil),          // 63: game.v1.SpinResp
+	(*RoundStateReq)(nil),     // 64: game.v1.RoundStateReq
+	(*RoundStateResp)(nil),    // 65: game.v1.RoundStateResp
+	(*GachaReq)(nil),          // 66: game.v1.GachaReq
+	(*GachaDrop)(nil),         // 67: game.v1.GachaDrop
+	(*GachaResp)(nil),         // 68: game.v1.GachaResp
+	(*JackpotInfoReq)(nil),    // 69: game.v1.JackpotInfoReq
+	(*JackpotInfoResp)(nil),   // 70: game.v1.JackpotInfoResp
+	(*JackpotClaimReq)(nil),   // 71: game.v1.JackpotClaimReq
+	(*JackpotClaimResp)(nil),  // 72: game.v1.JackpotClaimResp
+	(*RGStatusReq)(nil),       // 73: game.v1.RGStatusReq
+	(*RGStatusResp)(nil),      // 74: game.v1.RGStatusResp
+	(*GMSetRGReq)(nil),        // 75: game.v1.GMSetRGReq
+	(*PurchaseReceipt)(nil),   // 76: game.v1.PurchaseReceipt
+	(*GMGrantReq)(nil),        // 77: game.v1.GMGrantReq
+	(*GMQueryReq)(nil),        // 78: game.v1.GMQueryReq
+	(*LedgerEntry)(nil),       // 79: game.v1.LedgerEntry
+	(*GMQueryResp)(nil),       // 80: game.v1.GMQueryResp
+	nil,                       // 81: game.v1.BattleResult.ScoreEntry
+	(*PlayerBase)(nil),        // 82: game.v1.PlayerBase
+	(*PlayerBag)(nil),         // 83: game.v1.PlayerBag
+	(*PlayerQuest)(nil),       // 84: game.v1.PlayerQuest
+	(*Item)(nil),              // 85: game.v1.Item
+	(*Quest)(nil),             // 86: game.v1.Quest
+	(*Profile)(nil),           // 87: game.v1.Profile
+	(*PlayerSocial)(nil),      // 88: game.v1.PlayerSocial
+	(*PlayerMail)(nil),        // 89: game.v1.PlayerMail
+	(*Attachment)(nil),        // 90: game.v1.Attachment
+	(*Mail)(nil),              // 91: game.v1.Mail
 }
 var file_api_proto_depIdxs = []int32{
-	73, // 0: game.v1.LoginResp.base:type_name -> game.v1.PlayerBase
-	74, // 1: game.v1.LoginResp.bag:type_name -> game.v1.PlayerBag
-	75, // 2: game.v1.LoginResp.quest:type_name -> game.v1.PlayerQuest
-	51, // 3: game.v1.LoginResp.open_round:type_name -> game.v1.Round
-	76, // 4: game.v1.AddItemResp.item:type_name -> game.v1.Item
-	74, // 5: game.v1.GetBagResp.bag:type_name -> game.v1.PlayerBag
-	77, // 6: game.v1.QuestResp.quest:type_name -> game.v1.Quest
-	78, // 7: game.v1.GetProfileResp.profiles:type_name -> game.v1.Profile
-	79, // 8: game.v1.GetSocialResp.social:type_name -> game.v1.PlayerSocial
-	80, // 9: game.v1.GetMailResp.mail:type_name -> game.v1.PlayerMail
-	76, // 10: game.v1.ClaimMailResp.items:type_name -> game.v1.Item
-	67, // 11: game.v1.PurchaseReq.receipt:type_name -> game.v1.PurchaseReceipt
-	72, // 12: game.v1.BattleResult.score:type_name -> game.v1.BattleResult.ScoreEntry
-	81, // 13: game.v1.TransferJob.items:type_name -> game.v1.Attachment
-	82, // 14: game.v1.MailSendJob.mail:type_name -> game.v1.Mail
-	51, // 15: game.v1.SpinResp.round:type_name -> game.v1.Round
-	53, // 16: game.v1.SpinResp.lines:type_name -> game.v1.LineWin
-	51, // 17: game.v1.RoundStateResp.round:type_name -> game.v1.Round
-	58, // 18: game.v1.GachaResp.drops:type_name -> game.v1.GachaDrop
-	81, // 19: game.v1.GMGrantReq.items:type_name -> game.v1.Attachment
-	73, // 20: game.v1.GMQueryResp.base:type_name -> game.v1.PlayerBase
-	70, // 21: game.v1.GMQueryResp.entries:type_name -> game.v1.LedgerEntry
-	51, // 22: game.v1.GMQueryResp.open_round:type_name -> game.v1.Round
-	23, // [23:23] is the sub-list for method output_type
-	23, // [23:23] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	9,  // 0: game.v1.BindChannelResp.bindings:type_name -> game.v1.Binding
+	9,  // 1: game.v1.UnbindChannelResp.bindings:type_name -> game.v1.Binding
+	9,  // 2: game.v1.ListBindingsResp.bindings:type_name -> game.v1.Binding
+	82, // 3: game.v1.LoginResp.base:type_name -> game.v1.PlayerBase
+	83, // 4: game.v1.LoginResp.bag:type_name -> game.v1.PlayerBag
+	84, // 5: game.v1.LoginResp.quest:type_name -> game.v1.PlayerQuest
+	60, // 6: game.v1.LoginResp.open_round:type_name -> game.v1.Round
+	85, // 7: game.v1.AddItemResp.item:type_name -> game.v1.Item
+	83, // 8: game.v1.GetBagResp.bag:type_name -> game.v1.PlayerBag
+	86, // 9: game.v1.QuestResp.quest:type_name -> game.v1.Quest
+	87, // 10: game.v1.GetProfileResp.profiles:type_name -> game.v1.Profile
+	88, // 11: game.v1.GetSocialResp.social:type_name -> game.v1.PlayerSocial
+	89, // 12: game.v1.GetMailResp.mail:type_name -> game.v1.PlayerMail
+	85, // 13: game.v1.ClaimMailResp.items:type_name -> game.v1.Item
+	76, // 14: game.v1.PurchaseReq.receipt:type_name -> game.v1.PurchaseReceipt
+	81, // 15: game.v1.BattleResult.score:type_name -> game.v1.BattleResult.ScoreEntry
+	90, // 16: game.v1.TransferJob.items:type_name -> game.v1.Attachment
+	91, // 17: game.v1.MailSendJob.mail:type_name -> game.v1.Mail
+	60, // 18: game.v1.SpinResp.round:type_name -> game.v1.Round
+	62, // 19: game.v1.SpinResp.lines:type_name -> game.v1.LineWin
+	60, // 20: game.v1.RoundStateResp.round:type_name -> game.v1.Round
+	67, // 21: game.v1.GachaResp.drops:type_name -> game.v1.GachaDrop
+	90, // 22: game.v1.GMGrantReq.items:type_name -> game.v1.Attachment
+	82, // 23: game.v1.GMQueryResp.base:type_name -> game.v1.PlayerBase
+	79, // 24: game.v1.GMQueryResp.entries:type_name -> game.v1.LedgerEntry
+	60, // 25: game.v1.GMQueryResp.open_round:type_name -> game.v1.Round
+	26, // [26:26] is the sub-list for method output_type
+	26, // [26:26] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_init() }
@@ -4893,7 +5426,7 @@ func file_api_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_rawDesc), len(file_api_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   73,
+			NumMessages:   82,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

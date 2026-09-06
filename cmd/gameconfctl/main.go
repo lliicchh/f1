@@ -1,11 +1,11 @@
-// Command gameconfctl 是游戏配置表的运维工具。
+// Command gameconfctl 配置表的运维工具
 //
 //	gameconfctl dump  -o deploy/game.json     导出内置默认配置
 //	gameconfctl lint  -f deploy/game.json     校验配置并打印版本号
-//	gameconfctl rtp   -f deploy/game.json     蒙特卡洛实测各机器 RTP
+//	gameconfctl rtp   -f deploy/game.json     蒙特卡洛实测 RTP
 //
-// 配置版本号是内容哈希：改一个数字它就变。发布前用 lint 确认版本、
-// 用 rtp 确认数学模型没被改坏 —— 后者是 slots 上线前的必检项（评审 P1-4）。
+// 版本号是内容哈希，改一个数字它就变。发布前用 lint 确认版本，用 rtp 确认
+// 数学模型没被改坏
 package main
 
 import (

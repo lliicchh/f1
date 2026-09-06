@@ -4,36 +4,30 @@ package game.v1;
 
 option go_package = "github.com/gamedev/f1/pkg/pb;pb";
 
-// Envelope 是所有 NATS 消息的统一信封（设计文档 §5.3）。
-//
-// 演进规则：只增字段不改 tag，废弃字段必须 reserved。
-// 滚动发版时新旧版本进程会同时读写同一批数据/消息。
+// Envelope 是所有 NATS 消息的统一
 message Envelope {
-  uint32 cmd       = 1;
-  uint64 uid       = 2;
-  string trace_id  = 3;   // 全链路追踪，第一天就带上
+  uint32 cmd = 1;
+  uint64 uid = 2;
+  string trace_id = 3;   // 全链路追踪
   string from_node = 4;   // 发送方 nodeID
-  int64  ts_ms     = 5;
-  uint32 seq       = 6;   // 应答匹配
-  bytes  body      = 7;
+  int64  ts_ms = 5;
+  uint32 seq = 6;   // 应答匹配
+  bytes  body = 7;
 
   // 应答用：非 0 表示错误码，err_msg 为可读信息。
-  uint32 err_code  = 8;
-  string err_msg   = 9;
+  uint32 err_code = 8;
+  string err_msg = 9;
 
   // 目标分片，便于日志与断言（发送方按 uid/roomID 计算后填入）。
-  uint32 shard     = 10;
+  uint32 shard = 10;
 
-  // 内部命令签名（HMAC-SHA256 截断）。
+  // 内部命令签名，HMAC-SHA256 截断。
   //
-  // Internal / GM 级命令必须携带；接收方用共享密钥校验。
-  // 网关不持有这把密钥，因此即使有人伪造出一条内部命令，也过不了校验。
-  bytes  auth      = 11;
-  // 签发 GM 命令的操作者，用于审计（谁补的单）。
-  string operator  = 12;
+  // Internal 和 GM 级命令必须带。网关没有这把密钥，伪造也过不了校验。
+  bytes  auth = 11;
+  string operator = 12;  // GM 命令的操作者
 }
 
-// 通用空体 / 通用确认
 message Empty {}
 
 message Ack {

@@ -13,26 +13,23 @@ import (
 	"github.com/gamedev/f1/pkg/protocol"
 )
 
-// State 是一个分片的业务状态，全部方法都在该分片专属的 goroutine 内被调用。
+// State 一个分片的业务状态，所有方法都在该分片自己的 goroutine 里调用
 //
-// 因此实现者可以放心地用裸 map、裸 slice，不需要任何锁：
-// 「无锁、无竞态，业务代码是纯同步的」（§4.4）。
-//
-// 反过来，实现者必须遵守：回调内禁止任何阻塞操作。
-// 刷盘的序列化在 Actor 内做（读内存必须如此），实际 IO 甩给独立 goroutine。
+// 所以裸 map、裸 slice 随便用，不用加锁。代价是回调里不能有阻塞操作：
+// 序列化在这里做（读内存只能在这儿），真正的 IO 甩给别的 goroutine
 type State interface {
-	// Init 加载分片数据。在 Actor goroutine 内执行，返回错误则认领回滚。
+	// Init 加载分片数据，返回错误会回滚认领
 	Init(ctx context.Context, o Ownership) error
-	// Handle 处理一条入站请求。
+	// Handle 处理一条入站请求
 	Handle(m *bus.Msg)
-	// Tick 周期性回调，用于刷盘、卸载检查等。
+	// Tick 周期性回调，用于刷盘、卸载检查等
 	Tick(now time.Time)
-	// Close 在分片被释放时调用。graceful 时应全量刷盘；
-	// fenced / lease_lost 时必须直接丢弃内存，绝不能再写 Redis（§7.2）。
+	// Close 在分片被释放时调用。graceful 要全量刷盘；
+	// fenced 和 lease_lost 只能丢内存，一个字节都不许再写 Redis
 	Close(reason ReleaseReason)
 }
 
-// StateFactory 为一个分片创建业务状态。
+// StateFactory 给一个分片创建业务状态
 type StateFactory func(o Ownership) State
 
 type task struct {
@@ -41,7 +38,7 @@ type task struct {
 	enq time.Time
 }
 
-// Actor 是单个分片的执行单元：一条 goroutine 独占该分片全部内存数据。
+// Actor 一个分片的执行单元，一条 goroutine 独占这个分片的全部数据
 type Actor struct {
 	o       Ownership
 	mbox    chan task
@@ -57,22 +54,19 @@ type Actor struct {
 	lastWarn time.Time
 }
 
-// Epoch 返回该分片的 epoch。
 func (a *Actor) Epoch() int64 { return a.o.Epoch }
 
-// Shard 返回分片号。
 func (a *Actor) Shard() uint32 { return a.o.Shard }
 
-// Len 返回 mailbox 当前积压。
 func (a *Actor) Len() int { return len(a.mbox) }
 
-// ErrMailboxFull 表示 mailbox 已满。
+// ErrMailboxFull 表示 mailbox 已满
 var ErrMailboxFull = errors.New("shard: mailbox 已满")
 
-// ErrNotOwned 表示本实例未持有该分片。
+// ErrNotOwned 表示本实例未持有该分片
 var ErrNotOwned = errors.New("shard: 本实例未持有该分片")
 
-// post 投递任务。绝不阻塞 —— 调用方是 NATS 回调的单 goroutine（§5.4）。
+// post 投递任务，永不阻塞，调用方是 NATS 那条单 goroutine
 func (a *Actor) post(t task) error {
 	select {
 	case a.mbox <- t:
@@ -85,7 +79,7 @@ func (a *Actor) post(t task) error {
 func (a *Actor) run(kind Kind, initCtx context.Context, initErr chan<- error) {
 	defer close(a.done)
 
-	// Init 在本 goroutine 内执行：加载的数据从此刻起只被这条 goroutine 访问。
+	// Init 在这条 goroutine 里跑，加载出来的数据此后也只有它能碰
 	if err := a.state.Init(initCtx, a.o); err != nil {
 		initErr <- err
 		return
@@ -93,7 +87,7 @@ func (a *Actor) run(kind Kind, initCtx context.Context, initErr chan<- error) {
 	initErr <- nil
 
 	kindStr := string(kind)
-	// 刷盘时刻打散：ticker 初始偏移，避免 1024 分片同秒触发造成 Redis 尖峰（§6.3）。
+	// 首次 tick 按分片号错开，免得 1024 个分片挤在同一秒
 	offset := time.Duration(a.o.Shard%uint32(a.tick/time.Millisecond)) * time.Millisecond
 	timer := time.NewTimer(offset)
 	defer timer.Stop()
@@ -102,10 +96,8 @@ func (a *Actor) run(kind Kind, initCtx context.Context, initErr chan<- error) {
 	for {
 		select {
 		case <-a.quit:
-			// 优雅停止时先把 mailbox 里剩下的消息处理完，
-			// 对应 §10.3「处理完 pending 后」再收尾；
-			// 失去所有权（lease_lost / fenced）时绝不能再处理 ——
-			// 那些消息的处理结果会写进一份已经过期的内存。
+			// 优雅停止时把 mailbox 里剩的处理完再收尾。
+			// 失去所有权时不能处理，结果会写进一份已经过期的内存
 			if a.reason == ReleaseGraceful {
 				a.drain(kindStr)
 			}
@@ -129,7 +121,7 @@ func (a *Actor) run(kind Kind, initCtx context.Context, initErr chan<- error) {
 	}
 }
 
-// drain 处理 mailbox 中剩余的消息。
+// drain 把 mailbox 里剩的消息处理完
 func (a *Actor) drain(kindStr string) {
 	for {
 		select {
@@ -147,7 +139,7 @@ func (a *Actor) exec(kindStr string, t task) {
 
 	defer func() {
 		if r := recover(); r != nil {
-			// 单条消息 panic 不应带走整个分片：分片挂掉意味着一批玩家不可用。
+			// 一条消息 panic 不该带走整个分片，那意味着一批玩家全不可用
 			logx.Error("分片处理 panic，已隔离该消息", "kind", kindStr,
 				"shard", a.o.Shard, "cmd", cmd, "panic", r)
 			if t.msg != nil {
@@ -167,7 +159,7 @@ func (a *Actor) exec(kindStr string, t task) {
 	}
 }
 
-// warnBacklog 在 mailbox 积压超阈值时告警（§4.4 / §13 单分片过热）。
+// warnBacklog 在 mailbox 积压超阈值时告警
 func (a *Actor) warnBacklog(kindStr string) {
 	n, capn := len(a.mbox), cap(a.mbox)
 	if capn == 0 || a.warnPct <= 0 {
@@ -194,7 +186,7 @@ func (a *Actor) stop(reason ReleaseReason) {
 
 // ---------------------------------------------------------------------------
 
-// Runtime 管理本实例持有的全部分片 Actor。
+// Runtime 管理本实例持有的所有分片 Actor
 type Runtime struct {
 	kind    Kind
 	tick    time.Duration
@@ -206,7 +198,7 @@ type Runtime struct {
 	actors map[uint32]*Actor
 }
 
-// NewRuntime 构造 Actor 运行时。
+// NewRuntime 构造 Actor 运行时
 func NewRuntime(kind Kind, mailboxSize, warnPct int, tick time.Duration, factory StateFactory) *Runtime {
 	if tick <= 0 {
 		tick = time.Second
@@ -224,7 +216,7 @@ func NewRuntime(kind Kind, mailboxSize, warnPct int, tick time.Duration, factory
 	}
 }
 
-// Start 为一个已认领的分片启动 Actor，并同步等待 Init 完成。
+// Start 给已认领的分片起 Actor，同步等 Init 完成
 func (r *Runtime) Start(ctx context.Context, o Ownership) error {
 	r.mu.Lock()
 	if _, ok := r.actors[o.Shard]; ok {
@@ -256,7 +248,7 @@ func (r *Runtime) Start(ctx context.Context, o Ownership) error {
 	return nil
 }
 
-// Stop 停止某分片的 Actor。
+// Stop 停止某分片的 Actor
 func (r *Runtime) Stop(shard uint32, reason ReleaseReason) {
 	r.mu.Lock()
 	a, ok := r.actors[shard]
@@ -271,14 +263,14 @@ func (r *Runtime) Stop(shard uint32, reason ReleaseReason) {
 	metrics.ShardMailboxLen.DeleteLabelValues(string(r.kind), fmt.Sprint(shard))
 }
 
-// StopAll 停止全部 Actor。
+// StopAll 停止全部 Actor
 func (r *Runtime) StopAll(reason ReleaseReason) {
 	for _, s := range r.Shards() {
 		r.Stop(s, reason)
 	}
 }
 
-// Shards 返回当前运行中的分片列表。
+// Shards 返回当前运行中的分片列表
 func (r *Runtime) Shards() []uint32 {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -296,14 +288,13 @@ func (r *Runtime) actor(shard uint32) (*Actor, bool) {
 	return a, ok
 }
 
-// Post 把一条 NATS 请求投递给分片 Actor。
+// Post 把一条请求投给分片 Actor
 //
-// 这是 NATS 回调里唯一该做的事（§5.4）：投递入 mailbox，不做业务。
-// mailbox 满时立刻回 ErrUnavailable 让客户端重试，绝不阻塞回调 goroutine。
+// 这是 NATS 回调里唯一该做的事。mailbox 满就直接回错让客户端重试，不阻塞回调
 func (r *Runtime) Post(shard uint32, m *bus.Msg) {
 	a, ok := r.actor(shard)
 	if !ok {
-		// 分片不属于本实例：可能正处在交接窗口，客户端重试即可（§10.2）。
+		// 分片不在本实例，可能正在交接，让客户端重试
 		_ = m.RespondErr(protocol.ErrNotOwner, "分片 %d 不由本实例持有，请重试", shard)
 		return
 	}
@@ -313,7 +304,7 @@ func (r *Runtime) Post(shard uint32, m *bus.Msg) {
 	}
 }
 
-// Do 把一个闭包投递进分片 Actor 异步执行。
+// Do 把闭包扔进分片 Actor 异步执行
 func (r *Runtime) Do(shard uint32, fn func()) error {
 	a, ok := r.actor(shard)
 	if !ok {
@@ -322,9 +313,9 @@ func (r *Runtime) Do(shard uint32, fn func()) error {
 	return a.post(task{fn: fn, enq: time.Now()})
 }
 
-// Call 把闭包投递进 Actor 并等待其执行完成。
+// Call 把闭包投进 Actor 并等它跑完
 //
-// 严禁在 Actor goroutine 内调用（会死锁）。用于控制面：handoff、优雅下线、同步查询。
+// 别在 Actor goroutine 里调，会死锁。给控制面用：交接、下线、同步查询
 func (r *Runtime) Call(ctx context.Context, shard uint32, fn func()) error {
 	a, ok := r.actor(shard)
 	if !ok {
@@ -348,7 +339,7 @@ func (r *Runtime) Call(ctx context.Context, shard uint32, fn func()) error {
 	}
 }
 
-// Epoch 返回某分片 Actor 的 epoch。
+// Epoch 返回某分片 Actor 的 epoch
 func (r *Runtime) Epoch(shard uint32) (int64, bool) {
 	a, ok := r.actor(shard)
 	if !ok {
@@ -357,7 +348,7 @@ func (r *Runtime) Epoch(shard uint32) (int64, bool) {
 	return a.Epoch(), true
 }
 
-// Backlog 返回各分片 mailbox 积压快照，用于监控与排查。
+// Backlog 返回各分片 mailbox 的积压情况
 func (r *Runtime) Backlog() map[uint32]int {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

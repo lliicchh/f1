@@ -16,7 +16,7 @@ func TestCurrencyNeverGoesNegative(t *testing.T) {
 	if _, ok := p.AddCurrency(uint32(protocol.CurrencyGold), 100); !ok {
 		t.Fatal("加钱应成功")
 	}
-	// 余额不足时必须整体失败，不能扣成负数。
+	// 余额不足时必须整体失败，不能扣成负数
 	if bal, ok := p.AddCurrency(uint32(protocol.CurrencyGold), -200); ok {
 		t.Fatalf("余额不足应失败，实际扣成 %d", bal)
 	}
@@ -66,7 +66,7 @@ func TestBagFull(t *testing.T) {
 	}
 }
 
-// 扣道具不足时必须整体失败：不能扣掉一部分再报错，那会凭空销毁资产。
+// 扣道具不足时必须整体失败：不能扣掉一部分再报错，那会凭空销毁资产
 func TestRemoveItemAllOrNothing(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	now := time.Now()
@@ -96,7 +96,7 @@ func TestEmptyStacksAreCompacted(t *testing.T) {
 	}
 }
 
-// §6.1：只增字段不改 tag —— 缺失模块的老数据必须能安全加载。
+// 只增字段不改 tag，缺失模块的老数据必须能安全加载
 func TestFromBlobsHandlesMissingModules(t *testing.T) {
 	base := &pb.PlayerBase{Uid: 1001, Level: 9, Nick: "老玩家"}
 	blob, _ := proto.Marshal(base)
@@ -108,7 +108,7 @@ func TestFromBlobsHandlesMissingModules(t *testing.T) {
 	if p.Base.GetLevel() != 9 {
 		t.Fatalf("base 未还原，level = %d", p.Base.GetLevel())
 	}
-	// 缺失的模块必须补成可用的空值，不能是 nil。
+	// 缺失的模块必须补成可用的空值，不能是 nil
 	if p.Bag == nil || p.Quest == nil || p.Social == nil || p.Mail == nil {
 		t.Fatal("缺失模块必须补齐为空对象，否则后续访问会 panic")
 	}
@@ -131,7 +131,7 @@ func TestFromBlobsEmptyMakesNewPlayer(t *testing.T) {
 }
 
 func TestFromBlobsRejectsCorruptData(t *testing.T) {
-	// 损坏的数据必须报错，绝不能静默返回空玩家 —— 那等于清档。
+	// 损坏的数据必须报错，绝不能静默返回空玩家，那等于清空存档
 	_, err := FromBlobs(1001, map[store.Module][]byte{
 		store.ModBase: []byte("这不是 protobuf \xff\xfe"),
 	}, time.Now())
@@ -181,7 +181,7 @@ func TestProfileDerivedFromBase(t *testing.T) {
 	}
 }
 
-// §10.1：下线后保留 5~10 分钟再卸载。
+// 下线后保留 5~10 分钟再卸载
 func TestIdleOnlyCountsAfterOffline(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	p.Online = true

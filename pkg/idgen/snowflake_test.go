@@ -93,7 +93,7 @@ func TestParseRoundTrip(t *testing.T) {
 	}
 }
 
-// §3.6：回拨 <= 10ms 自旋等待追平。
+// 回拨 <= 10ms 自旋等待追平
 func TestSmallClockRollbackSpins(t *testing.T) {
 	g, _ := New(1)
 	base := time.Now().UnixMilli()
@@ -104,7 +104,7 @@ func TestSmallClockRollbackSpins(t *testing.T) {
 	if _, err := g.Next(); err != nil {
 		t.Fatal(err)
 	}
-	// 回拨 5ms，随后由「真实时间」慢慢追平。
+	// 回拨 5ms，随后由「真实时间」慢慢追平
 	cur.Store(base - 5)
 	go func() {
 		for i := 0; i <= 5; i++ {
@@ -130,7 +130,7 @@ func TestSmallClockRollbackSpins(t *testing.T) {
 	}
 }
 
-// §3.6：回拨 > 10ms 必须停止发号，绝不能继续。
+// 回拨 > 10ms 必须停止发号，绝不能继续
 func TestLargeClockRollbackHalts(t *testing.T) {
 	g, _ := New(1)
 	base := time.Now().UnixMilli()
@@ -148,11 +148,11 @@ func TestLargeClockRollbackHalts(t *testing.T) {
 	if !g.Halted() {
 		t.Fatal("大幅回拨后应处于停止状态")
 	}
-	// 停止期间持续拒绝。
+	// 停止期间持续拒绝
 	if _, err := g.Next(); err == nil {
 		t.Fatal("停止期间不得继续发号")
 	}
-	// 时钟修正后自动恢复。
+	// 时钟修正后自动恢复
 	cur = base + 1
 	if _, err := g.Next(); err != nil {
 		t.Fatalf("时钟追平后应恢复发号: %v", err)
@@ -162,7 +162,7 @@ func TestLargeClockRollbackHalts(t *testing.T) {
 	}
 }
 
-// 同一毫秒内耗尽 4096 个序列号后必须等到下一毫秒，而不是回绕产生重复 ID。
+// 同一毫秒内耗尽 4096 个序列号后必须等到下一毫秒，而不是回绕产生重复 ID
 func TestSequenceOverflowWaitsNextMilli(t *testing.T) {
 	g, _ := New(1)
 	base := time.Now().UnixMilli()
@@ -170,7 +170,7 @@ func TestSequenceOverflowWaitsNextMilli(t *testing.T) {
 	calls := 0
 	g.now = func() int64 {
 		calls++
-		// 前 5000 次调用停留在同一毫秒，之后前进。
+		// 前 5000 次调用停留在同一毫秒，之后前进
 		if calls > 5000 {
 			cur = base + 1
 		}

@@ -11,7 +11,7 @@ import (
 	"github.com/gamedev/f1/test/harness"
 )
 
-// 用较小的分片空间跑测试：认领逻辑与 1024 完全一致，但快得多。
+// 测试用小一点的分片空间，认领逻辑跟 1024 一样，但快得多
 const testShards = 32
 
 func smallShards(c *config.Config) {
@@ -45,7 +45,7 @@ func (r *recorder) hooks() shard.Hooks {
 	}
 }
 
-// P1：单实例应认领全部分片。
+// 单实例应该把整个分片空间吃下来
 func TestClaimerTakesWholeSpace(t *testing.T) {
 	env := harness.Start(t)
 	n := env.Node(t, "lobby", "lobby", 1, smallShards)
@@ -61,8 +61,8 @@ func TestClaimerTakesWholeSpace(t *testing.T) {
 		return c.Count() == testShards
 	})
 
-	// 每个分片的 epoch 都必须是真实的 etcd revision，不能是占位的 0 ——
-	// epoch=0 会让 fencing 完全失效。
+	// 每个分片的 epoch 都必须是真实的 etcd revision，不能是占位的 0，
+	// epoch=0 会让 fencing 完全失效
 	for s := uint32(0); s < testShards; s++ {
 		epoch, ok := c.Epoch(s)
 		if !ok {
@@ -74,7 +74,7 @@ func TestClaimerTakesWholeSpace(t *testing.T) {
 	}
 }
 
-// P1 的核心不变式：任一时刻，一个分片只能被一个实例持有（§1 强约束）。
+// 核心不变式：任一时刻一个分片只能被一个实例持有
 func TestNoShardIsOwnedTwice(t *testing.T) {
 	env := harness.Start(t)
 
@@ -110,7 +110,7 @@ func TestNoShardIsOwnedTwice(t *testing.T) {
 	}
 	for _, s := range c2.Owned() {
 		if prev, dup := owned[s]; dup {
-			t.Fatalf("分片 %d 被 %s 与 %s 同时持有 —— 内存态下这会导致双副本互相覆盖刷盘",
+			t.Fatalf("分片 %d 被 %s 与 %s 同时持有，内存态下这会导致双副本互相覆盖刷盘",
 				s, prev, n2.NodeID())
 		}
 		owned[s] = n2.NodeID()
@@ -119,13 +119,13 @@ func TestNoShardIsOwnedTwice(t *testing.T) {
 		t.Fatalf("覆盖的分片数 = %d，期望 %d", len(owned), testShards)
 	}
 
-	// 两边都应拿到接近公平份额，不能一个吃光另一个空转。
+	// 两边都应拿到接近公平份额，不能一个吃光另一个空转
 	if c1.Count() == 0 || c2.Count() == 0 {
 		t.Fatalf("分片分配不均：c1=%d c2=%d", c1.Count(), c2.Count())
 	}
 }
 
-// §13：Lobby 实例崩溃 → lease 过期后其他实例接管。
+// 实例崩了，lease 过期后别人接管
 func TestTakeoverAfterOwnerDies(t *testing.T) {
 	env := harness.Start(t)
 
@@ -145,7 +145,7 @@ func TestTakeoverAfterOwnerDies(t *testing.T) {
 		return c1.Count() == testShards
 	})
 
-	// 模拟崩溃：直接切断 etcd 连接，不做优雅释放，让 lease 自然过期。
+	// 模拟崩溃：直接切断 etcd 连接，不做优雅释放，让 lease 自然过期
 	_ = n1.Etcd.Close()
 
 	r2 := newRecorder()
@@ -157,12 +157,12 @@ func TestTakeoverAfterOwnerDies(t *testing.T) {
 	}
 	defer c2.Stop(ctx)
 
-	// lease TTL 2s + 扫描间隔 3s，给足余量。
+	// lease TTL 2s + 扫描间隔 3s，给足余量
 	harness.Eventually(t, 30*time.Second, "c2 接管全部分片", func() bool {
 		return c2.Count() == testShards
 	})
 
-	// 接管方的 epoch 必须严格大于原 owner —— 这是 fencing 能拦住旧 owner 的前提。
+	// 接管方的 epoch 必须严格大于原 owner，这是 fencing 能拦住旧 owner 的前提
 	for s := uint32(0); s < testShards; s++ {
 		oldEpoch, _ := c1.Epoch(s)
 		newEpoch, ok := c2.Epoch(s)
@@ -175,7 +175,7 @@ func TestTakeoverAfterOwnerDies(t *testing.T) {
 	}
 }
 
-// §7：接管后旧 owner 的写入必须被 fencing 拒绝 —— 端到端验证一次。
+// 接管之后旧 owner 再写必须被拒，端到端走一遍
 func TestFencingBlocksOldOwnerAfterRealTakeover(t *testing.T) {
 	env := harness.Start(t)
 
@@ -188,7 +188,7 @@ func TestFencingBlocksOldOwnerAfterRealTakeover(t *testing.T) {
 	ctx := context.Background()
 	const target = uint32(3)
 
-	// c1 认领并抬高 epoch（模拟正常服务）。
+	// c1 认领并抬高 epoch（模拟正常服务）
 	h1 := shard.Hooks{
 		OnAcquire: func(ctx context.Context, o shard.Ownership) error {
 			if o.Shard == target {
@@ -210,7 +210,7 @@ func TestFencingBlocksOldOwnerAfterRealTakeover(t *testing.T) {
 		t.Fatalf("持有期内写入应成功: %v", err)
 	}
 
-	// c1「冻结」：断开 etcd，lease 过期。
+	// c1「冻结」：断开 etcd，lease 过期
 	_ = n1.Etcd.Close()
 
 	h2 := shard.Hooks{
@@ -235,7 +235,7 @@ func TestFencingBlocksOldOwnerAfterRealTakeover(t *testing.T) {
 		t.Fatalf("新 owner 写入应成功: %v", err)
 	}
 
-	// c1 恢复，带着旧 epoch 刷盘 —— 这就是 §7.1 的 T5，必须被拒绝。
+	// c1 恢复后带着旧 epoch 刷盘，必须被拒
 	err := f1.WriteModules(ctx, target, oldEpoch, map[string][]byte{key: []byte("c1-stale")})
 	if err == nil {
 		t.Fatal("旧 owner 的滞后写入必须被 epoch fencing 拒绝")

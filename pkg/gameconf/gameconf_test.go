@@ -17,9 +17,9 @@ func TestDefaultConfigIsValid(t *testing.T) {
 	}
 }
 
-// 版本号取内容哈希：同样的内容必须得到同样的版本，改一个数字就必须变。
+// 版本号取内容哈希：同样的内容必须得到同样的版本，改一个数字就必须变
 //
-// 这是「历史回合可复算」的前提 —— 人工维护的版本号一定会有人忘了改。
+// 这是「历史回合可复算」的前提，人工维护的版本号一定会有人忘了改
 func TestVersionIsContentHash(t *testing.T) {
 	a := Default()
 	b := Default()
@@ -37,7 +37,7 @@ func TestVersionIsContentHash(t *testing.T) {
 		t.Fatal("改了赔付表版本号必须变化，否则历史回合无法区分用的哪一版")
 	}
 
-	// 改轴带同样要反映到版本号。
+	// 改轴带同样要反映到版本号
 	d := Default()
 	d.Slots["classic5"].Reels[0][0] = SymWild
 	if err := d.computeVersion(); err != nil {
@@ -119,7 +119,7 @@ func TestValidateCatchesBadGachaAndProducts(t *testing.T) {
 	})
 }
 
-// 下注档位必须能被线数整除，否则线注会产生舍入 —— 钱上不接受舍入。
+// 下注档位必须能被线数整除，否则线注会产生舍入，钱上不接受舍入
 func TestBetLevelsDivisible(t *testing.T) {
 	c := Default()
 	for id, m := range c.Slots {
@@ -165,7 +165,7 @@ func TestLoadRejectsInvalidFile(t *testing.T) {
 	}
 }
 
-// 热替换必须原子：校验不过时旧配置保持不动。
+// 热替换必须原子：校验不过时旧配置保持不动
 func TestStoreRejectsInvalidReplacement(t *testing.T) {
 	good := Default()
 	s := NewStore(good)
@@ -200,7 +200,7 @@ func TestStackableFromConfig(t *testing.T) {
 	if c.Stackable(4001) {
 		t.Error("传说英雄不应可堆叠")
 	}
-	// 未定义的道具按保守处理（不可堆叠），避免误合并。
+	// 未定义的道具按保守处理（不可堆叠），避免误合并
 	if c.Stackable(999999) {
 		t.Error("未定义道具应按不可堆叠处理")
 	}

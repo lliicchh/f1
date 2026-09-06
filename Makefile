@@ -1,7 +1,6 @@
-# 游戏服务器构建与运维入口。
 SHELL := /bin/bash
 
-SERVICES := gateway lobby room match chat world
+SERVICES := gateway account lobby room match chat world
 TAG      ?= dev
 ENV_FILE ?= deploy/s1.env
 PROJECT  ?= game-s1

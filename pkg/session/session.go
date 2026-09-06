@@ -1,9 +1,9 @@
-// Package session 实现 §9 的网关路由表与顶号。
+// Package session 网关路由表和顶号
 //
-//	session:{uid} → {gateID, connID}   (Redis，TTL + 心跳续期)
+//	session:{uid} → {gateID, connID}，带 TTL，靠心跳续期
 //
-// 网关只订两个 subject（push.gate.{gateID} 与 push.broadcast），
-// 订阅数与在线人数无关；代价是多一次查表，可本地缓存，注意顶号时失效（§9.1 / D4）。
+// 网关只订 push.gate.{gateID} 和 push.broadcast 两个 subject，订阅数与在线人数无关。
+// 代价是每次推送多一次查表，可以本地缓存，但顶号时要让缓存失效
 package session
 
 import (
@@ -21,7 +21,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// Info 是一条会话路由。
+// Info 一条会话路由
 type Info struct {
 	UID     uint64
 	GateID  string
@@ -30,13 +30,13 @@ type Info struct {
 	BeatAt  int64
 }
 
-// Empty 报告是否为空路由（玩家不在线）。
+// Empty 报告是否为空路由（玩家不在线）
 func (i Info) Empty() bool { return i.GateID == "" }
 
-// ErrOffline 表示玩家不在线。
+// ErrOffline 表示玩家不在线
 var ErrOffline = errors.New("session: 玩家不在线")
 
-// scriptBind 原子替换 session，并返回被顶掉的旧 gateID/connID（§9.2）。
+// scriptBind 原子替换 session，顺便返回被顶掉的旧 gateID 和 connID
 var scriptBind = redis.NewScript(`
 local old = redis.call('HMGET', KEYS[1], 'gate_id', 'conn_id')
 redis.call('HSET', KEYS[1],
@@ -46,10 +46,9 @@ redis.call('EXPIRE', KEYS[1], ARGV[5])
 return {old[1] or '', old[2] or ''}
 `)
 
-// scriptUnbind 只在 gate/conn 都匹配时才删除。
+// scriptUnbind 只在 gate 和 conn 都对得上时才删
 //
-// 这条件很关键：顶号后旧连接的清理消息会迟到，
-// 若无条件删除会把刚建立的新会话一起删掉。
+// 顶号后旧连接的清理会迟到，无条件删会把刚建好的新会话一起删了
 var scriptUnbind = redis.NewScript(`
 local g = redis.call('HGET', KEYS[1], 'gate_id')
 local c = redis.call('HGET', KEYS[1], 'conn_id')
@@ -60,7 +59,7 @@ end
 return 0
 `)
 
-// scriptTouch 心跳续期，同样要求 gate/conn 匹配。
+// scriptTouch 心跳续期，同样要求 gate 和 conn 匹配
 var scriptTouch = redis.NewScript(`
 local g = redis.call('HGET', KEYS[1], 'gate_id')
 local c = redis.call('HGET', KEYS[1], 'conn_id')
@@ -72,14 +71,13 @@ redis.call('EXPIRE', KEYS[1], ARGV[4])
 return 1
 `)
 
-// Store 是会话路由表的 Redis 实现。
+// Store 会话路由表的 Redis 实现
 type Store struct {
 	rdb  redis.UniversalClient
 	keys *store.Keys
 	ttl  time.Duration
 }
 
-// NewStore 构造会话表。
 func NewStore(rdb redis.UniversalClient, keys *store.Keys, ttl time.Duration) *Store {
 	if ttl <= 0 {
 		ttl = 5 * time.Minute
@@ -87,12 +85,9 @@ func NewStore(rdb redis.UniversalClient, keys *store.Keys, ttl time.Duration) *S
 	return &Store{rdb: rdb, keys: keys, ttl: ttl}
 }
 
-// TTL 返回会话 TTL。
 func (s *Store) TTL() time.Duration { return s.ttl }
 
-// Bind 建立会话，返回被顶掉的旧会话（若有）。
-//
-// 顶号流程：Lua 原子替换 session，取出旧 gateID 后由调用方发 KICK（§9.2）。
+// Bind 建会话，返回被顶掉的旧会话。调用方拿到旧 gateID 后去发 KICK
 func (s *Store) Bind(ctx context.Context, uid uint64, gateID string, connID uint64) (old Info, err error) {
 	now := time.Now().UnixMilli()
 	res, err := scriptBind.Run(ctx, s.rdb, []string{s.keys.Session(uid)},
@@ -101,7 +96,7 @@ func (s *Store) Bind(ctx context.Context, uid uint64, gateID string, connID uint
 		return Info{}, fmt.Errorf("绑定会话失败 uid=%d: %w", uid, err)
 	}
 
-	// 索引到网关名下，供网关重启时清理（§9.4）。不同 slot，必须单独执行。
+	// 挂到网关名下，重启时靠它清理。不同 slot，只能单独执行
 	if err := s.rdb.SAdd(ctx, s.keys.GateSessions(gateID), uid).Err(); err != nil {
 		logx.Warn("写入网关会话索引失败（不阻断登录）", "gate", gateID, "uid", uid, "err", err)
 	}
@@ -116,7 +111,7 @@ func (s *Store) Bind(ctx context.Context, uid uint64, gateID string, connID uint
 	return Info{UID: uid, GateID: oldGate, ConnID: cid}, nil
 }
 
-// Unbind 删除会话（仅当 gate/conn 匹配）。
+// Unbind 删会话，只在 gate 和 conn 匹配时生效
 func (s *Store) Unbind(ctx context.Context, uid uint64, gateID string, connID uint64) (bool, error) {
 	n, err := scriptUnbind.Run(ctx, s.rdb, []string{s.keys.Session(uid)}, gateID, strconv.FormatUint(connID, 10)).Int64()
 	if err != nil {
@@ -126,7 +121,7 @@ func (s *Store) Unbind(ctx context.Context, uid uint64, gateID string, connID ui
 	return n == 1, nil
 }
 
-// Touch 心跳续期。返回 false 表示该连接已不是当前会话（已被顶号）。
+// Touch 心跳续期。返回 false 说明这条连接已经被顶掉了
 func (s *Store) Touch(ctx context.Context, uid uint64, gateID string, connID uint64) (bool, error) {
 	n, err := scriptTouch.Run(ctx, s.rdb, []string{s.keys.Session(uid)},
 		gateID, strconv.FormatUint(connID, 10), time.Now().UnixMilli(), int64(s.ttl.Seconds())).Int64()
@@ -136,7 +131,6 @@ func (s *Store) Touch(ctx context.Context, uid uint64, gateID string, connID uin
 	return n == 1, nil
 }
 
-// Get 查询单个会话。
 func (s *Store) Get(ctx context.Context, uid uint64) (Info, error) {
 	vals, err := s.rdb.HMGet(ctx, s.keys.Session(uid), "gate_id", "conn_id", "login_at", "beat_at").Result()
 	if err != nil {
@@ -145,7 +139,7 @@ func (s *Store) Get(ctx context.Context, uid uint64) (Info, error) {
 	return parseInfo(uid, vals), nil
 }
 
-// GetMany 批量查询会话，用于房间/公会广播按 gateID 聚合（§9.3）。
+// GetMany 批量查会话，房间和公会广播要用
 func (s *Store) GetMany(ctx context.Context, uids []uint64) (map[uint64]Info, error) {
 	if len(uids) == 0 {
 		return nil, nil
@@ -171,10 +165,9 @@ func (s *Store) GetMany(ctx context.Context, uids []uint64) (map[uint64]Info, er
 	return out, nil
 }
 
-// GroupByGate 把 uid 列表按所在网关聚合。
+// GroupByGate 把一批 uid 按所在网关分组
 //
-// 房间/公会广播不走 NATS 广播：由 Room 分片批量查路由表，按 gateID 聚合，
-// 每个网关发一条带多个 uid 的包（§9.3）。
+// 房间和公会广播不走 NATS 广播，而是查一遍路由表按网关聚合，每个网关发一条包
 func (s *Store) GroupByGate(ctx context.Context, uids []uint64) (map[string][]uint64, error) {
 	infos, err := s.GetMany(ctx, uids)
 	if err != nil {
@@ -187,10 +180,9 @@ func (s *Store) GroupByGate(ctx context.Context, uids []uint64) (map[string][]ui
 	return out, nil
 }
 
-// CleanGate 清理某网关名下所有会话（网关启动时调用，§9.4）。
+// CleanGate 清掉某网关名下的会话，网关启动时调
 //
-// 两种清理都要做：这里是启动时的主动清理，另一条是 session TTL 由心跳续期，
-// 网关崩溃后不再续期，自然过期。
+// 两条路都要有：这里是主动清，另一条是 TTL 到期自然消失
 func (s *Store) CleanGate(ctx context.Context, gateID string) (int, error) {
 	idxKey := s.keys.GateSessions(gateID)
 	uids, err := s.rdb.SMembers(ctx, idxKey).Result()
@@ -204,7 +196,7 @@ func (s *Store) CleanGate(ctx context.Context, gateID string) (int, error) {
 		if perr != nil {
 			continue
 		}
-		// 只删仍指向本网关的会话：玩家可能已经重连到别的网关了。
+		// 只删还指向本网关的，玩家可能已经重连到别处了
 		info, gerr := s.Get(ctx, uid)
 		if gerr != nil {
 			continue
@@ -246,10 +238,9 @@ func parseInfo(uid uint64, vals []any) Info {
 
 // ---------------------------------------------------------------------------
 
-// Cache 是会话路由的本地缓存。
+// Cache 缓存会话路由，省掉每次推送的一次查表
 //
-// 「代价是多一次查询（可本地缓存，注意顶号时失效）」（§9.1）。
-// 失效由 evt.session.changed 事件驱动，另配一个很短的兜底 TTL。
+// 失效靠 evt.session.changed 事件，另配一个很短的 TTL 兜底
 type Cache struct {
 	store *Store
 	ttl   time.Duration
@@ -263,7 +254,7 @@ type cacheItem struct {
 	exp  time.Time
 }
 
-// NewCache 构造缓存。ttl 建议 1~3s：它只是兜底，主失效路径是事件。
+// NewCache 构造缓存。ttl 给 1~3s 就行，它只是兜底，主要靠事件失效
 func NewCache(s *Store, ttl time.Duration) *Cache {
 	if ttl <= 0 {
 		ttl = 2 * time.Second
@@ -271,7 +262,7 @@ func NewCache(s *Store, ttl time.Duration) *Cache {
 	return &Cache{store: s, ttl: ttl, items: make(map[uint64]cacheItem)}
 }
 
-// Get 查询会话，优先走缓存。
+// Get 查会话，先看缓存
 func (c *Cache) Get(ctx context.Context, uid uint64) (Info, error) {
 	c.mu.RLock()
 	it, ok := c.items[uid]
@@ -290,14 +281,13 @@ func (c *Cache) Get(ctx context.Context, uid uint64) (Info, error) {
 	return info, nil
 }
 
-// Invalidate 让某玩家的缓存失效（收到 evt.session.changed 时调用）。
+// Invalidate 让某个玩家的缓存失效
 func (c *Cache) Invalidate(uid uint64) {
 	c.mu.Lock()
 	delete(c.items, uid)
 	c.mu.Unlock()
 }
 
-// Purge 清空缓存。
 func (c *Cache) Purge() {
 	c.mu.Lock()
 	c.items = make(map[uint64]cacheItem)

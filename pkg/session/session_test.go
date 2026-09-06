@@ -19,7 +19,7 @@ func newStore(t *testing.T) (*Store, *miniredis.Miniredis) {
 	return NewStore(rdb, store.NewKeys(store.TagUID, 1024, "lobby"), time.Minute), mr
 }
 
-// §9.2：Lua 脚本原子替换 session，取出旧 gateID 后发 KICK。
+// Lua 脚本原子替换 session，取出旧 gateID 后发 KICK
 func TestBindReturnsKickedSession(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
@@ -46,7 +46,7 @@ func TestBindReturnsKickedSession(t *testing.T) {
 	}
 }
 
-// 顶号后旧连接的清理会迟到，绝不能把新会话删掉。
+// 顶号后旧连接的清理会迟到，绝不能把新会话删掉
 func TestUnbindOnlyMatchingConn(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
@@ -54,7 +54,7 @@ func TestUnbindOnlyMatchingConn(t *testing.T) {
 	_, _ = s.Bind(ctx, 1001, "gw1", 111)
 	_, _ = s.Bind(ctx, 1001, "gw2", 222)
 
-	// 旧连接迟到的解绑。
+	// 旧连接迟到的解绑
 	removed, err := s.Unbind(ctx, 1001, "gw1", 111)
 	if err != nil {
 		t.Fatal(err)
@@ -67,7 +67,7 @@ func TestUnbindOnlyMatchingConn(t *testing.T) {
 		t.Fatalf("新会话被误删: %+v", cur)
 	}
 
-	// 当前连接的解绑正常生效。
+	// 当前连接的解绑正常生效
 	removed, _ = s.Unbind(ctx, 1001, "gw2", 222)
 	if !removed {
 		t.Fatal("当前连接的解绑应生效")
@@ -77,7 +77,7 @@ func TestUnbindOnlyMatchingConn(t *testing.T) {
 	}
 }
 
-// 心跳续期同样要求 gate/conn 匹配：被顶号的连接续不上，据此断开自己。
+// 心跳续期同样要求 gate/conn 匹配：被顶号的连接续不上，据此断开自己
 func TestTouchDetectsTakeover(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
@@ -93,7 +93,7 @@ func TestTouchDetectsTakeover(t *testing.T) {
 	}
 }
 
-// §9.3：房间/公会广播由分片查路由表后按 gateID 聚合。
+// 房间/公会广播由分片查路由表后按 gateID 聚合
 func TestGroupByGate(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
@@ -101,7 +101,7 @@ func TestGroupByGate(t *testing.T) {
 	_, _ = s.Bind(ctx, 1, "gw1", 1)
 	_, _ = s.Bind(ctx, 2, "gw1", 2)
 	_, _ = s.Bind(ctx, 3, "gw2", 3)
-	// uid=4 不在线。
+	// uid=4 不在线
 
 	byGate, err := s.GroupByGate(ctx, []uint64{1, 2, 3, 4})
 	if err != nil {
@@ -118,14 +118,14 @@ func TestGroupByGate(t *testing.T) {
 	}
 }
 
-// §9.4：网关启动时清理自己名下的会话；已重连到别处的玩家不能被误清。
+// 网关启动时清理自己名下的会话；已重连到别处的玩家不能被误清
 func TestCleanGateSkipsMigratedPlayers(t *testing.T) {
 	s, _ := newStore(t)
 	ctx := context.Background()
 
 	_, _ = s.Bind(ctx, 1, "gw1", 1)
 	_, _ = s.Bind(ctx, 2, "gw1", 2)
-	// 玩家 2 已经重连到 gw2。
+	// 玩家 2 已经重连到 gw2
 	_, _ = s.Bind(ctx, 2, "gw2", 22)
 
 	n, err := s.CleanGate(ctx, "gw1")
@@ -143,7 +143,7 @@ func TestCleanGateSkipsMigratedPlayers(t *testing.T) {
 	}
 }
 
-// session 必须有 TTL：网关崩溃后靠它自然过期（§9.4 的第二条清理路径）。
+// session 必须有 TTL：网关崩溃后靠它自然过期
 func TestSessionHasTTL(t *testing.T) {
 	s, mr := newStore(t)
 	ctx := context.Background()
@@ -171,7 +171,7 @@ func TestCacheInvalidation(t *testing.T) {
 	}
 
 	_, _ = s.Bind(ctx, 1001, "gw2", 2)
-	// 未失效前仍读到旧值 —— 这正是需要事件驱动失效的原因。
+	// 没失效前还是旧值，所以顶号时必须主动失效
 	if got, _ := c.Get(ctx, 1001); got.GateID != "gw1" {
 		t.Fatal("缓存应命中旧值")
 	}

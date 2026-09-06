@@ -1,9 +1,7 @@
-// Package metrics 汇总 §14 的全部监控指标。
+// Package metrics 全部监控指标
 //
-// 标注「必须告警」的指标在代码中同时打 Error 日志，方便没接 Prometheus 时也能发现：
-//   - epoch 校验失败次数（非零即告警）
-//   - NATS slow consumer 次数
-//   - 时钟回拨触发次数（非零即告警）
+// 几个非零就该看一眼的：epoch 校验失败、NATS slow consumer、时钟回拨、鉴权拒绝。
+// 这些同时也打 Error 日志，没接 Prometheus 时靠日志也能发现
 package metrics
 
 import (
@@ -20,56 +18,56 @@ const ns = "game"
 // ---------------------------- 分片 ----------------------------
 
 var (
-	// ShardMailboxLen mailbox 当前长度，需监控积压（§4.4）。
+	// ShardMailboxLen 当前积压
 	ShardMailboxLen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Subsystem: "shard", Name: "mailbox_len",
-		Help: "当前 mailbox 中待处理消息数",
+		Help: "mailbox 中待处理的消息数",
 	}, []string{"kind", "shard"})
 
-	// ShardMailboxCap mailbox 容量上限。
+	// ShardMailboxCap mailbox 容量上限
 	ShardMailboxCap = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Subsystem: "shard", Name: "mailbox_cap",
 		Help: "mailbox 容量上限",
 	}, []string{"kind"})
 
-	// ShardMailboxDropped mailbox 满导致的丢弃数（背压）。
+	// ShardMailboxDropped mailbox 满丢掉的消息数
 	ShardMailboxDropped = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "shard", Name: "mailbox_dropped_total",
 		Help: "mailbox 满被丢弃的消息数",
 	}, []string{"kind", "shard"})
 
-	// ShardHandleLatency 消息处理延迟，用于 P99。
+	// ShardHandleLatency 消息处理延迟，用于 P99
 	ShardHandleLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: ns, Subsystem: "shard", Name: "handle_latency_seconds",
 		Help:    "Actor 内单条消息处理耗时",
 		Buckets: prometheus.ExponentialBuckets(0.0001, 2, 16),
 	}, []string{"kind", "cmd"})
 
-	// ShardOwnerChanges 分片 owner 变更次数。
+	// ShardOwnerChanges 分片 owner 变更次数
 	ShardOwnerChanges = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "shard", Name: "owner_changes_total",
 		Help: "本进程获得/释放分片所有权的次数",
 	}, []string{"kind", "action"}) // action: acquire / release / lost
 
-	// ShardOwned 当前持有的分片数。
+	// ShardOwned 当前持有的分片数
 	ShardOwned = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Subsystem: "shard", Name: "owned",
 		Help: "当前持有的分片数量",
 	}, []string{"kind"})
 
-	// ShardEpochRejected epoch 校验失败次数 —— 非零即告警（§14）。
+	// ShardEpochRejected epoch 校验失败次数，非零就是发生过脑裂
 	ShardEpochRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "shard", Name: "epoch_rejected_total",
 		Help: "epoch fencing 拒绝写入的次数，非零即代表发生过脑裂",
 	}, []string{"kind", "shard"})
 
-	// ShardLeaseLost 续租失败次数。
+	// ShardLeaseLost 续租失败次数
 	ShardLeaseLost = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "shard", Name: "lease_lost_total",
 		Help: "分片 lease 丢失次数",
 	}, []string{"kind"})
 
-	// ShardHandoff 主动交接次数。
+	// ShardHandoff 主动交接次数
 	ShardHandoff = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "shard", Name: "handoff_total",
 		Help: "分片主动交接次数",
@@ -90,7 +88,7 @@ var (
 		Help: "刷盘失败次数（失败后重新标脏，绝不丢弃）",
 	}, []string{"kind", "cause"}) // cause: redis / epoch / serialize
 
-	// FlushChBacklog flushCh 满导致重新标脏的次数（§6.3，必须告警）。
+	// FlushChBacklog flushCh 满、只能重新标脏的次数
 	FlushChBacklog = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "flush", Name: "chan_backlog_total",
 		Help: "flushCh 满走 default 重新标脏的次数，说明 Redis 已扛不住",
@@ -101,7 +99,7 @@ var (
 		Help: "flushCh 当前积压批次数",
 	}, []string{"kind"})
 
-	// DirtyAge 脏数据滞留时长 —— 真实丢失窗口（§14）。
+	// DirtyAge 脏数据滞留了多久，也就是真实的丢失窗口
 	DirtyAge = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: ns, Subsystem: "flush", Name: "dirty_age_seconds",
 		Help:    "从标脏到成功落盘的时长，即真实数据丢失窗口",
@@ -113,7 +111,7 @@ var (
 		Help: "累计刷盘实体数",
 	}, []string{"kind", "level"})
 
-	// WriteThrough L0 写穿次数与耗时。
+	// WriteThrough L0 写穿耗时
 	WriteThrough = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Namespace: ns, Subsystem: "flush", Name: "write_through_seconds",
 		Help:    "L0 写穿耗时（同步落 Redis 成功后才改内存回包）",
@@ -124,7 +122,7 @@ var (
 // ---------------------------- NATS ----------------------------
 
 var (
-	// NATSSlowConsumer slow consumer 次数 —— 必须告警（§5.4）。
+	// NATSSlowConsumer slow consumer 次数，出现就说明在丢消息
 	NATSSlowConsumer = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "nats", Name: "slow_consumer_total",
 		Help: "NATS slow consumer 次数，pending 超限会静默丢弃消息",
@@ -165,13 +163,13 @@ var (
 // ---------------------------- ID ----------------------------
 
 var (
-	// IDClockBackwards 时钟回拨触发次数 —— 非零即告警（§14）。
+	// IDClockBackwards 时钟回拨次数
 	IDClockBackwards = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "id", Name: "clock_backwards_total",
 		Help: "雪花检测到时钟回拨的次数",
 	}, []string{"severity"}) // severity: minor(自旋追平) / major(停止发号)
 
-	// IDSeqOverflow 序列号溢出次数（同毫秒内 4096 用尽）。
+	// IDSeqOverflow 同毫秒内序列号用尽的次数
 	IDSeqOverflow = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "id", Name: "seq_overflow_total",
 		Help: "同一毫秒内序列号用尽、需等待下一毫秒的次数",
@@ -206,7 +204,7 @@ var (
 		Help: "常驻内存的房间数",
 	})
 
-	// TxPending 跨分片转移 PENDING 数与超时数（§8）。
+	// TxPending 当前 PENDING 的跨分片转移数
 	TxPending = prometheus.NewGauge(prometheus.GaugeOpts{
 		Namespace: ns, Subsystem: "biz", Name: "tx_pending",
 		Help: "当前 PENDING 状态的跨分片转移数",
@@ -238,22 +236,22 @@ var (
 		Help: "实例堆内存占用（runtime.MemStats.Alloc）",
 	})
 
-	// NodeIDConflict 启动自检撞号次数（§3.4）。进程会直接退出，这里主要用于 push 到告警。
+	// NodeIDConflict 撞号次数。进程会直接退出，这个指标主要用来触发告警
 	NodeIDConflict = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "node", Name: "id_conflict_total",
 		Help: "nodeID 撞号导致启动失败的次数",
 	})
 
-	// ---- slots / 运营指标（评审 P1-4、P2-4）----
+	// ---- slots / 运营指标----
 
-	// Spins 旋转次数，按游戏与是否免费拆分。
+	// Spins 旋转次数，按游戏和是否免费分
 	Spins = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "slots", Name: "spins_total",
 		Help: "旋转次数",
 	}, []string{"game", "kind"}) // kind: paid / free
 
-	// BetAmount / WinAmount 是 RTP 的两个分子分母，必须实时可查。
-	// RTP 偏离理论值不是体验问题，是配置错误或作弊的第一信号。
+	// BetAmount 和 WinAmount RTP 的分子分母，要能实时看。
+	// RTP 偏了通常不是体验问题，而是配置错了或者有人在薅
 	BetAmount = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "slots", Name: "bet_amount_total",
 		Help: "累计投注额（最小货币单位）",
@@ -295,31 +293,31 @@ var (
 		Help: "待派彩的奖池记录数，长期非零说明派彩链路卡住了",
 	}, []string{"pool"})
 
-	// LedgerEntries 流水写入数。它与资金变动次数应当同步增长。
+	// LedgerEntries 流水条数，应该和资金变动次数同步涨
 	LedgerEntries = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "ledger", Name: "entries_total",
 		Help: "写入的流水条数",
 	})
 
-	// RGBlocked 责任游戏拦截次数。
+	// RGBlocked 责任游戏拦了多少次
 	RGBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "rg", Name: "blocked_total",
 		Help: "被责任游戏限额拦截的次数",
 	}, []string{"reason"})
 
-	// AuthzRejected 鉴权拒绝次数 —— 非零即需排查（要么有人在试探，要么有服务配错了）。
+	// AuthzRejected 鉴权拒绝次数。非零要查：要么有人在试探，要么哪个服务配错了
 	AuthzRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "authz", Name: "rejected_total",
 		Help: "命令鉴权拒绝次数",
 	}, []string{"cmd", "reason"})
 
-	// AuthnFailed 登录认证失败次数。
+	// AuthnFailed 登录认证失败次数
 	AuthnFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "authn", Name: "failed_total",
 		Help: "登录认证失败次数",
 	}, []string{"reason"})
 
-	// GachaDraws 抽卡次数与保底触发次数。
+	// GachaDraws 抽卡次数
 	GachaDraws = prometheus.NewCounterVec(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "gacha", Name: "draws_total",
 		Help: "抽卡次数",
@@ -330,11 +328,44 @@ var (
 		Help: "保底触发次数",
 	}, []string{"pool", "kind"})
 
-	// ConfigVersion 当前生效的配置版本，用 1 值 gauge 打标，便于回溯某段时间用的是哪版。
+	// ConfigVersion 当前生效的配置版本，用来回溯某段时间跑的是哪一版
 	ConfigVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Namespace: ns, Subsystem: "conf", Name: "active",
 		Help: "当前生效的配置版本",
 	}, []string{"version"})
+
+	// ---------------------------- 账号 ----------------------------
+
+	// IDPVerify 渠道校验结果。outcome 取 ok / bad_credential / upstream / timeout
+	IDPVerify = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "idp", Name: "verify_total",
+		Help: "渠道凭证校验次数",
+	}, []string{"channel", "outcome"})
+
+	// IDPLatency 渠道校验耗时。外部 IO，慢和抖都要看得见
+	IDPLatency = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: ns, Subsystem: "idp", Name: "verify_seconds",
+		Help:    "渠道凭证校验耗时",
+		Buckets: []float64{.01, .05, .1, .25, .5, 1, 2, 5},
+	}, []string{"channel"})
+
+	// IDPBreakerOpen 熔断器是否打开。持续为 1 说明这个渠道已经登不进来了
+	IDPBreakerOpen = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Subsystem: "idp", Name: "breaker_open",
+		Help: "渠道熔断器是否打开",
+	}, []string{"channel"})
+
+	// AccountCreated 开号数
+	AccountCreated = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "account", Name: "created_total",
+		Help: "首次登录开号数",
+	}, []string{"channel"})
+
+	// AccountBindConflict 绑定冲突次数，非零说明有人在拿别人的渠道账号试
+	AccountBindConflict = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "account", Name: "bind_conflict_total",
+		Help: "渠道绑定冲突次数",
+	}, []string{"channel", "reason"})
 
 	SessionKick = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "biz", Name: "session_kick_total",
@@ -357,15 +388,16 @@ func init() {
 		Spins, BetAmount, WinAmount, SpinWinRatio, RoundsOpen, RoundRecovered,
 		JackpotAmount, JackpotWins, JackpotPending, LedgerEntries,
 		RGBlocked, AuthzRejected, AuthnFailed, GachaDraws, GachaPityHits, ConfigVersion,
+		IDPVerify, IDPLatency, IDPBreakerOpen, AccountCreated, AccountBindConflict,
 	)
 	registry.MustRegister(prometheus.NewGoCollector())
 	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 }
 
-// Registry 返回内部注册表，便于测试。
+// Registry 返回内部注册表，测试用
 func Registry() *prometheus.Registry { return registry }
 
-// Serve 在给定地址上暴露 /metrics 与 /healthz。addr 为空则不启动。
+// Serve 暴露 /metrics 和 /healthz，addr 为空就不起
 func Serve(addr string) *http.Server {
 	if addr == "" {
 		return nil

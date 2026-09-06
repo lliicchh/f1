@@ -20,7 +20,7 @@ import (
 
 const gameID = "classic5"
 
-// spin 发起一次旋转。
+// spin 发起一次旋转
 func spin(t *testing.T, n *node0, uid uint64, bet int64, clientID string) *pb.SpinResp {
 	t.Helper()
 	var resp pb.SpinResp
@@ -32,7 +32,7 @@ func spin(t *testing.T, n *node0, uid uint64, bet int64, clientID string) *pb.Sp
 	return &resp
 }
 
-// 端到端：下注扣款、派彩入账、余额守恒、流水齐全。
+// 端到端看一遍：扣款、派彩、余额守恒、流水齐全
 func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -53,7 +53,7 @@ func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 		if resp.GetDuplicate() {
 			t.Fatal("不同的旋转不应被判为重复")
 		}
-		// 免费旋转不扣注。
+		// 免费旋转不扣注
 		if resp.GetRound().GetSpinIndex() == 1 {
 			totalBet += bet
 		} else if !resp.GetRoundFinished() || resp.GetRound().GetFreeSpinsTotal() == 0 {
@@ -62,13 +62,13 @@ func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 		}
 		totalWin += resp.GetSpinWin()
 
-		// 余额必须与服务端返回一致。
+		// 余额必须与服务端返回一致
 		if resp.GetBalance() > balance+resp.GetSpinWin() {
 			t.Fatalf("余额异常增长：%d → %d", balance, resp.GetBalance())
 		}
 		balance = resp.GetBalance()
 
-		// 若进入免费旋转，把它打完再继续下一注。
+		// 若进入免费旋转，把它打完再继续下一注
 		for !resp.GetRoundFinished() {
 			resp = spin(t, n, uid, bet, "")
 			totalWin += resp.GetSpinWin()
@@ -76,7 +76,7 @@ func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 		}
 	}
 
-	// 流水必须与余额对得上：这正是账本存在的意义。
+	// 流水得和余额对得上，账本就是干这个的
 	reader := ledger.NewReader(n.Redis, n.Keys)
 	ctx := context.Background()
 	entries, err := reader.Recent(ctx, uid, 1000)
@@ -84,7 +84,7 @@ func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(entries) == 0 {
-		t.Fatal("必须有流水 —— 没有流水的资金变动是查不清的")
+		t.Fatal("必须有流水，没有流水的资金变动是查不清的")
 	}
 
 	var sum int64
@@ -113,15 +113,15 @@ func TestSpinDeductsAndPaysAtomically(t *testing.T) {
 	if bets == 0 {
 		t.Fatal("应当有下注流水")
 	}
-	// 起始余额是通过 GRANT 发放的，也在流水里，因此总和应等于当前余额。
+	// 起始余额是通过 GRANT 发放的，也在流水里，因此总和应等于当前余额
 	if sum != balance {
-		t.Fatalf("流水求和 %d 与当前余额 %d 不符 —— 存在对账差额", sum, balance)
+		t.Fatalf("流水求和 %d 与当前余额 %d 不符，存在对账差额", sum, balance)
 	}
 	t.Logf("30 轮：投注 %d 派彩 %d 余额 %d 流水 %d 条（下注 %d / 派彩 %d）",
 		totalBet, totalWin, balance, len(entries), bets, wins)
 }
 
-// 评审 P0-2 / 下注档位：客户端不能自定金额。
+// 下注档位：客户端不能自定金额
 func TestSpinRejectsInvalidBet(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -140,7 +140,7 @@ func TestSpinRejectsInvalidBet(t *testing.T) {
 	}
 }
 
-// 余额不足必须拒绝，且不产生任何副作用。
+// 余额不足要拒，而且不留任何副作用
 func TestSpinRejectsInsufficientBalance(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -159,7 +159,7 @@ func TestSpinRejectsInsufficientBalance(t *testing.T) {
 	}
 }
 
-// 客户端重发同一次 spin 不得重复扣费。
+// 客户端重发同一次 spin 不能重复扣费
 func TestSpinIsIdempotent(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -186,7 +186,7 @@ func TestSpinIsIdempotent(t *testing.T) {
 	}
 }
 
-// 评审 P1-1：免费旋转中途「崩溃」，重启后必须能取回并打完。
+// 免费旋转打到一半进程重启，重连后要能取回来打完
 func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -196,7 +196,7 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 	loginPlayer(t, n, uid)
 	grant(t, n, uid, uint32(protocol.CurrencyGold), 5_000_000)
 
-	// 一直转到触发免费旋转为止。
+	// 一直转到触发免费旋转为止
 	var open *pb.Round
 	for i := 0; i < 20000; i++ {
 		resp := spin(t, n, uid, 100, "")
@@ -210,14 +210,14 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 	}
 	t.Logf("触发免费旋转：round=%d 剩余 %d 次", open.GetRoundId(), open.GetFreeSpinsLeft())
 
-	// 未结算回合必须已经落盘 —— 这才是断线能恢复的根据。
+	// 未结算回合得已经落盘了，断线才恢复得回来
 	ctx := context.Background()
 	blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModRound)).Bytes()
 	if err != nil || len(blob) == 0 {
 		t.Fatalf("未结算回合必须随投注原子落盘: %v", err)
 	}
 
-	// 模拟进程重启：停掉服务再起一个新的，让玩家对象从 Redis 重新加载。
+	// 模拟重启：停掉再起一个新的，让玩家对象从 Redis 重新加载
 	sctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	svc.StopAccepting(sctx)
 	_ = svc.FlushAll(sctx)
@@ -238,7 +238,7 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 	})
 	harness.Eventually(t, 30*time.Second, "新实例认领分片", func() bool { return svc2.Owns(uid) })
 
-	// 重连：登录应带回未结算回合。
+	// 重连：登录应带回未结算回合
 	var login pb.LoginResp
 	if err := lobbyCall(t, n2, uid, protocol.CmdLogin,
 		&pb.LoginReq{Uid: uid, GateId: "g2", ConnId: 2}, &login); err != nil {
@@ -255,7 +255,7 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 			login.GetOpenRound().GetFreeSpinsLeft(), open.GetFreeSpinsLeft())
 	}
 
-	// 也能通过 round_state 查询到。
+	// 也能通过 round_state 查询到
 	var st pb.RoundStateResp
 	if err := lobbyCall(t, n2, uid, protocol.CmdRoundState, &pb.RoundStateReq{}, &st); err != nil {
 		t.Fatal(err)
@@ -264,7 +264,7 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 		t.Fatal("round_state 应返回未结算回合")
 	}
 
-	// 把剩余免费旋转打完，回合应正常结束。
+	// 把剩余免费旋转打完，回合应正常结束
 	before := grant(t, n2, uid, uint32(protocol.CurrencyGold), 0)
 	for i := 0; i < 200; i++ {
 		resp := spin(t, n2, uid, 100, "")
@@ -285,7 +285,7 @@ func TestIncompleteRoundSurvivesRestart(t *testing.T) {
 	}
 }
 
-// 免费旋转期间不扣注。
+// 免费旋转期间不该扣钱
 func TestFreeSpinsDoNotCharge(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -300,7 +300,7 @@ func TestFreeSpinsDoNotCharge(t *testing.T) {
 		if resp.GetRoundFinished() {
 			continue
 		}
-		// 进入免费旋转：接下来的每一次旋转，余额都不应因下注而减少。
+		// 进入免费旋转：接下来的每一次旋转，余额都不应因下注而减少
 		for !resp.GetRoundFinished() {
 			before := resp.GetBalance()
 			resp = spin(t, n, uid, 100, "")
@@ -313,7 +313,7 @@ func TestFreeSpinsDoNotCharge(t *testing.T) {
 	t.Skip("未触发免费旋转，跳过")
 }
 
-// 评审 P1-6：触发日投注限额后必须拒绝下注。
+// 到了日投注限额就该拒绝下注
 func TestDailyBetLimitBlocksSpin(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -323,7 +323,7 @@ func TestDailyBetLimitBlocksSpin(t *testing.T) {
 	loginPlayer(t, n, uid)
 	grant(t, n, uid, uint32(protocol.CurrencyGold), 1_000_000)
 
-	// GM 把日投注限额压到 250，只够两把 100。
+	// GM 把日投注限额压到 250，只够两把 100
 	setRG(t, n, uid, &pb.GMSetRGReq{Uid: uid, DailyBetLimit: 250, DailyLossLimit: -1, SessionLimit: -1})
 
 	for i := 0; i < 2; i++ {
@@ -338,7 +338,7 @@ func TestDailyBetLimitBlocksSpin(t *testing.T) {
 		t.Fatal("超过日投注限额必须拒绝下注")
 	}
 
-	// 状态接口应如实反映。
+	// 状态接口应如实反映
 	var st pb.RGStatusResp
 	if err := lobbyCall(t, n, uid, protocol.CmdRGStatus, &pb.RGStatusReq{}, &st); err != nil {
 		t.Fatal(err)
@@ -351,7 +351,7 @@ func TestDailyBetLimitBlocksSpin(t *testing.T) {
 	}
 }
 
-// 自我排除期内禁止登录与下注。
+// 自我排除期内既不能登录也不能下注
 func TestSelfExclusionBlocksPlay(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -377,7 +377,7 @@ func TestSelfExclusionBlocksPlay(t *testing.T) {
 	}
 }
 
-// 评审 P1-5：奖池注入是原子的，并发下总额等于各笔之和。
+// 奖池注入是原子的，并发注入后总额应该等于各笔之和
 func TestJackpotContributionIsAtomic(t *testing.T) {
 	env := harness.Start(t)
 	n := env.Node(t, "lobby", "lobby", 1, lobbyCfg)
@@ -416,7 +416,7 @@ func TestJackpotContributionIsAtomic(t *testing.T) {
 	}
 }
 
-// 奖池中奖必须原子：清零与派彩记录同生共死，且只能被拿走一次。
+// 中奖时清零和派彩记录要一起成，而且只能被拿走一次
 func TestJackpotClaimIsAtomicAndOnce(t *testing.T) {
 	env := harness.Start(t)
 	n := env.Node(t, "lobby", "lobby", 1, lobbyCfg)
@@ -439,18 +439,18 @@ func TestJackpotClaimIsAtomicAndOnce(t *testing.T) {
 		t.Fatalf("派彩金额 %d 应等于清零前的水位 %d", payout.Amount, before)
 	}
 
-	// 清零后应回到底注。
+	// 清零后应回到底注
 	after, _ := jm.Amount(ctx, pool)
 	if after != conf.Jackpots[pool].Seed {
 		t.Fatalf("清零后应回到底注 %d，实际 %d", conf.Jackpots[pool].Seed, after)
 	}
 
-	// 同一个空池不能再被拿走一次。
+	// 同一个空池不能再被拿走一次
 	if _, err := jm.Claim(ctx, pool, 1002, 43, "tx-jp-2"); err == nil {
 		t.Fatal("空池不应再产生派彩")
 	}
 
-	// 派彩记录必须落进待处理索引，否则「清了池子没人拿到钱」。
+	// 派彩记录必须落进待处理索引，否则「清了池子没人拿到钱」
 	pending, err := jm.PendingPayouts(ctx, pool, time.Now().Add(time.Minute), 10)
 	if err != nil {
 		t.Fatal(err)
@@ -459,7 +459,7 @@ func TestJackpotClaimIsAtomicAndOnce(t *testing.T) {
 		t.Fatalf("应有且仅有一条待派彩记录，实际 %+v", pending)
 	}
 
-	// 结算后从索引移除。
+	// 结算后从索引移除
 	if err := jm.Settle(ctx, pending[0]); err != nil {
 		t.Fatal(err)
 	}
@@ -469,7 +469,7 @@ func TestJackpotClaimIsAtomicAndOnce(t *testing.T) {
 	}
 }
 
-// 评审 P1-7：抽卡保底必须生效。
+// 抽卡保底得生效
 func TestGachaPityGuarantee(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -480,7 +480,7 @@ func TestGachaPityGuarantee(t *testing.T) {
 
 	conf := gameconf.Default()
 	pool := conf.Gacha["standard"]
-	// 备足钱抽满一个保底周期。
+	// 备足钱抽满一个保底周期
 	grant(t, n, uid, pool.Currency, pool.Cost*int64(pool.PityTop+20))
 
 	var draws int
@@ -508,11 +508,11 @@ func TestGachaPityGuarantee(t *testing.T) {
 	}
 
 	if !gotTop {
-		t.Fatalf("抽满 %d 次仍未出最高稀有度 —— 保底没生效", pool.PityTop)
+		t.Fatalf("抽满 %d 次仍未出最高稀有度，保底没生效", pool.PityTop)
 	}
 	t.Logf("第 %d 抽出最高稀有度（保底触发=%v，保底阈值 %d）", draws, pityTriggered, pool.PityTop)
 
-	// 消耗与产出都要有流水。
+	// 消耗与产出都要有流水
 	reader := ledger.NewReader(n.Redis, n.Keys)
 	entries, err := reader.Recent(context.Background(), uid, 500)
 	if err != nil {
@@ -532,7 +532,7 @@ func TestGachaPityGuarantee(t *testing.T) {
 	}
 }
 
-// 十连保底：必定包含至少一个高稀有度。
+// 十连里至少得有一个高稀有度
 func TestGachaTenPullGuarantee(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -561,12 +561,12 @@ func TestGachaTenPullGuarantee(t *testing.T) {
 			}
 		}
 		if !high {
-			t.Fatalf("第 %d 次十连未包含高稀有度 —— 十连保底没生效", round+1)
+			t.Fatalf("第 %d 次十连未包含高稀有度，十连保底没生效", round+1)
 		}
 	}
 }
 
-// 未知卡池 / 未知游戏必须拒绝。
+// 未知游戏和未知卡池都得拒
 func TestUnknownGameAndPoolRejected(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -586,7 +586,7 @@ func TestUnknownGameAndPoolRejected(t *testing.T) {
 	}
 }
 
-// 未知商品与无效回执必须拒绝（评审 P0-2）。
+// 未知商品和无效回执都得拒
 func TestPurchaseRejectsUnknownProductAndBadReceipt(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -595,7 +595,7 @@ func TestPurchaseRejectsUnknownProductAndBadReceipt(t *testing.T) {
 	harness.Eventually(t, 20*time.Second, "认领分片", func() bool { return svc.Owns(uid) })
 	loginPlayer(t, n, uid)
 
-	// 未知商品：以前这里会按客户端给的金额直接发钱。
+	// 未知商品：以前这里会按客户端给的金额直接发钱
 	if err := lobbyCall(t, n, uid, protocol.CmdPurchase, &pb.PurchaseReq{
 		OrderId: "o-unknown", Product: 99999,
 		Receipt: &pb.PurchaseReceipt{Channel: "sandbox", Signature: "x"},
@@ -603,7 +603,7 @@ func TestPurchaseRejectsUnknownProductAndBadReceipt(t *testing.T) {
 		t.Fatal("未知商品必须拒绝")
 	}
 
-	// 已知商品但签名无效。
+	// 已知商品但签名无效
 	if err := lobbyCall(t, n, uid, protocol.CmdPurchase, &pb.PurchaseReq{
 		OrderId: "o-badsig", Product: 1,
 		Receipt: &pb.PurchaseReceipt{Channel: "sandbox", Signature: "AAAA"},
@@ -611,7 +611,7 @@ func TestPurchaseRejectsUnknownProductAndBadReceipt(t *testing.T) {
 		t.Fatal("无效回执必须拒绝")
 	}
 
-	// 不允许的渠道。
+	// 不允许的渠道
 	if err := lobbyCall(t, n, uid, protocol.CmdPurchase, &pb.PurchaseReq{
 		OrderId: "o-badchan", Product: 1,
 		Receipt: &pb.PurchaseReceipt{Channel: "wechat", Signature: "AAAA"},
@@ -619,13 +619,13 @@ func TestPurchaseRejectsUnknownProductAndBadReceipt(t *testing.T) {
 		t.Fatal("未授权渠道必须拒绝")
 	}
 
-	// 确认一分钱都没到账。
+	// 确认一分钱都没到账
 	if bal := grant(t, n, uid, uint32(protocol.CurrencyDiamond), 0); bal != 0 {
 		t.Fatalf("被拒绝的充值不应到账，实际钻石 = %d", bal)
 	}
 }
 
-// GM 补单必须幂等，并留下带操作者的流水。
+// GM 补单要幂等，还要留下带操作者的流水
 func TestGMGrantIdempotentAndAudited(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -665,11 +665,11 @@ func TestGMGrantIdempotentAndAudited(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatal("GM 补单必须留下带操作者的流水 —— 否则无法追责")
+		t.Fatal("GM 补单必须留下带操作者的流水，否则无法追责")
 	}
 }
 
-// GM 命令缺少 operator 必须被拒（审计要求）。
+// GM 命令没带 operator 就该拒，不然没法审计
 func TestGMCommandRequiresOperator(t *testing.T) {
 	env := harness.Start(t)
 	n, svc := startLobby(t, env, 1)
@@ -691,7 +691,7 @@ func TestGMCommandRequiresOperator(t *testing.T) {
 
 // ---- 测试辅助 ----
 
-// node0 是 node.Node 的别名，避免在签名里重复长包名。
+// node0 node.Node 的别名，避免在签名里重复长包名
 type node0 = node.Node
 
 func shardOf(n *node0, uid uint64) uint32 { return shard.Of(uid, n.Cfg.ShardCount) }
@@ -700,7 +700,7 @@ func lobbySubject(sh uint32, cmd protocol.Cmd) string {
 	return subject.LobbyReq(sh, cmd.Name())
 }
 
-// loginPlayer 让玩家登录（会话由 Lobby 侧记录，供推送与 RG 计时使用）。
+// loginPlayer 让玩家登录（会话由 Lobby 侧记录，供推送与 RG 计时使用）
 func loginPlayer(t *testing.T, n *node0, uid uint64) {
 	t.Helper()
 	if err := lobbyCall(t, n, uid, protocol.CmdLogin,
@@ -709,7 +709,7 @@ func loginPlayer(t *testing.T, n *node0, uid uint64) {
 	}
 }
 
-// setRG 通过 GM 通道设置责任游戏限额。传 -1 表示不修改该项。
+// setRG 通过 GM 通道设置责任游戏限额。传 -1 表示不修改该项
 func setRG(t *testing.T, n *node0, uid uint64, req *pb.GMSetRGReq) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

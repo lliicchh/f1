@@ -13,6 +13,59 @@ message LoginReq {
   string token   = 2;
   string gate_id = 3;
   uint64 conn_id = 4;
+
+  // 渠道登录：填 channel + credential，uid 和 token 留空，网关转给账号服务换。
+  // 重连时客户端应当带上次拿到的 token 走 uid+token 这条路，不要再打一次渠道
+  string channel    = 5;
+  string credential = 6;
+  string device_id  = 7;
+}
+
+// ------------------------- 账号（Account） -------------------------
+
+// AuthChannelReq 拿渠道凭证换我们自己的 token
+message AuthChannelReq {
+  string channel    = 1;
+  string credential = 2;
+  string device_id  = 3;
+}
+
+message AuthChannelResp {
+  uint64 uid         = 1;
+  string token       = 2;
+  int64  expires_at  = 3;   // 毫秒
+  bool   first_login = 4;   // 这次登录顺带开的号
+  string open_id     = 5;
+}
+
+// BindChannelReq 给已登录的 uid 再绑一个渠道
+message BindChannelReq {
+  string channel    = 1;
+  string credential = 2;
+}
+
+message BindChannelResp {
+  repeated Binding bindings = 1;
+}
+
+message UnbindChannelReq {
+  string channel = 1;
+}
+
+message UnbindChannelResp {
+  repeated Binding bindings = 1;
+}
+
+message ListBindingsReq {}
+
+message ListBindingsResp {
+  repeated Binding bindings = 1;
+}
+
+message Binding {
+  string channel  = 1;
+  string open_id  = 2;
+  int64  bound_at = 3;   // 毫秒
 }
 
 message LoginResp {
@@ -20,8 +73,7 @@ message LoginResp {
   PlayerBag  bag    = 2;
   PlayerQuest quest = 3;
   bool   reconnect  = 4;
-  // open_round 非空表示有未结算的回合（例如免费旋转打到一半断线），
-  // 客户端必须先把它打完。这是监管对 incomplete round 的硬性要求。
+  // open_round 非空表示有没打完的回合，客户端要先把它打完。
   Round  open_round = 5;
 }
 
@@ -29,7 +81,7 @@ message LogoutReq {
   uint64 uid  = 1;
   string gate_id = 2;
   uint64 conn_id = 3;
-  uint32 reason  = 4;   // 0=主动 1=断线 2=顶号
+  uint32 reason  = 4;   // 0 主动 1 断线 2 顶号
 }
 
 // 顶号下发（push.gate.{gateID}）
@@ -84,11 +136,11 @@ message GetMailResp { PlayerMail mail = 1; }
 message ClaimMailReq { uint64 mail_id = 1; }
 message ClaimMailResp { repeated Item items = 1; }
 
-// L0 写穿：充值，必须幂等（设计文档 §6.2）+ 必须验签（评审 P0-2）
+// 充值。订单号保证幂等，回执签名防伪造，两个都要。
 message PurchaseReq {
   string order_id = 1;   // 客户端唯一订单号
   uint32 product  = 2;
-  reserved 3;            // 原 amount：到账数量只能来自服务端配置，绝不能由客户端指定
+  reserved 3;            // 原 amount。到账数量只能来自服务端配置
   reserved "amount";
   PurchaseReceipt receipt = 4;
 }
@@ -103,9 +155,7 @@ message CreateRoomReq {
   uint32 mode = 1;
   uint32 max_player = 2;
   repeated uint64 members = 3;
-  // room_id 由调用方（Match / Lobby）用雪花生成后填入：
-  // 房间分片 = room_id % ShardCount，调用方必须据此选择 subject，
-  // 因此 ID 只能在调用方产生，不能等到 Room 分片里再生成。
+  // room_id 由调用方用雪花生成。房间分片由它决定，调用方得先有 ID 才能选对 subject。
   uint64 room_id = 4;
 }
 message CreateRoomResp { uint64 room_id = 1; }
@@ -123,7 +173,7 @@ message RoomOpReq {
 message RoomSnapshot {
   uint64 room_id = 1;
   uint32 mode    = 2;
-  uint32 state   = 3;   // 0=等待 1=战斗中 2=结算
+  uint32 state   = 3;   // 0 等待 1 战斗中 2 结算
   repeated uint64 members = 4;
   int64  created_at = 5;
   int64  started_at = 6;
@@ -136,7 +186,7 @@ message RoomBroadcast {
   bytes  payload = 3;
 }
 
-// 网关聚合推送：一条消息带多个 uid（设计文档 §9.3）
+// 网关聚合推送，一条消息带多个 uid
 message MultiPush {
   repeated uint64 uids = 1;
   uint32 cmd = 2;
@@ -145,7 +195,7 @@ message MultiPush {
 
 message BattleResult {
   uint64 room_id = 1;
-  uint64 target_uid = 5;  // job 投递时指明结算目标
+  uint64 target_uid = 5;  // job 投递时指明给谁结算
   repeated uint64 winners = 2;
   repeated uint64 losers  = 3;
   map<uint64, int64> score = 4;
@@ -171,7 +221,7 @@ message MatchFound {
 // ------------------------- 聊天 -------------------------
 
 message ChatReq {
-  uint32 channel = 1;   // 1=世界 2=公会 3=私聊 4=房间
+  uint32 channel = 1;   // 1 世界 2 公会 3 私聊 4 房间
   uint64 from    = 2;
   uint64 to      = 3;
   uint64 guild_id = 4;
@@ -186,7 +236,7 @@ message ChatMsg {
   int64  ts_ms   = 5;
 }
 
-// ------------------------- 跨分片转移（§8） -------------------------
+// ------------------------- 跨分片转移 -------------------------
 
 message TransferJob {
   string txid = 1;
@@ -205,7 +255,7 @@ message MailSendJob {
   string txid   = 3;
 }
 
-// ------------------------- 控制面（§10） -------------------------
+// ------------------------- 控制面 -------------------------
 
 message HandoffReq {
   string kind      = 1;   // "lobby" / "room"
@@ -220,7 +270,7 @@ message HandoffResp {
 
 message ShutdownReq { string reason = 1; }
 
-// ------------------------- 世界（§2.1） -------------------------
+// ------------------------- 世界 -------------------------
 
 message WorldBossState {
   uint64 boss_id = 1;
@@ -236,32 +286,31 @@ message WorldBossHitResp { int64 hp_left = 1; bool killed = 2; }
 // slots
 // ---------------------------------------------------------------------------
 
-// Round 是一次游戏回合，从下注开始到结算结束。
+// Round 是一次游戏回合，从下注到结算。
 //
-// 免费旋转期间回合保持 OPEN；玩家断线重连后必须能取回它继续打完 ——
-// 这既是体验需求，也是 GLI-19 对 incomplete round 的硬性要求。
+// 免费旋转期间保持 OPEN。玩家断线重连后要能取回来接着打完。
 message Round {
   uint64 round_id         = 1;
   string game_id          = 2;
-  string config_version   = 3;  // 结算时使用的配置版本，事后复算靠它
-  string seed_hex         = 4;  // RNG 种子，复算靠它
+  string config_version   = 3;  // 结算用的配置版本，复算要
+  string seed_hex         = 4;  // RNG 种子，复算要
   uint32 currency         = 5;
-  int64  bet              = 6;  // 单次旋转总投注
+  int64  bet              = 6;  // 单次旋转的总投注
   int64  total_win        = 7;  // 本回合累计派彩
-  uint32 spin_index       = 8;  // 已进行的旋转次数（复算时要重放到这一步）
+  uint32 spin_index       = 8;  // 已经转了几次，复算时要重放到这一步
   uint32 free_spins_left  = 9;
   uint32 free_spins_total = 10;
   uint32 multiplier       = 11;
-  uint32 state            = 12; // 0=OPEN 1=SETTLED
+  uint32 state            = 12; // 0 未结算 1 已结算
   int64  created_at       = 13;
   int64  settled_at       = 14;
 }
 
 message SpinReq {
   string game_id  = 1;
-  int64  bet      = 2;   // 免费旋转时忽略，沿用回合内的下注额
+  int64  bet      = 2;   // 免费旋转时忽略，用回合里那个
   uint32 currency = 3;
-  string client_id = 4;  // 客户端幂等号：重发同一次 spin 不得重复扣费
+  string client_id = 4;  // 客户端幂等号，重发同一次 spin 不能重复扣费
 }
 
 message LineWin {
@@ -273,16 +322,16 @@ message LineWin {
 
 message SpinResp {
   Round  round        = 1;
-  repeated uint32 grid = 2;   // 按列展开：reel0 行0..N, reel1 行0..N ...
-  repeated uint32 stops = 3;  // 各轴停止位置，复算校验用
+  repeated uint32 grid = 2;   // 按列展开：reel0 各行、reel1 各行……
+  repeated uint32 stops = 3;  // 各轴停位，复算时对照
   repeated LineWin lines = 4;
   uint32 scatter_count  = 5;
-  int64  spin_win       = 6;  // 本次旋转派彩（含倍数）
+  int64  spin_win       = 6;  // 本次派彩，已含倍数
   int64  balance        = 7;
   uint32 free_spins_awarded = 8;
   bool   round_finished = 9;
-  int64  jackpot_win    = 10; // 非 0 表示中了奖池
-  bool   duplicate      = 11; // 重发的 spin，返回的是首次结果
+  int64  jackpot_win    = 10; // 非 0 表示中奖池了
+  bool   duplicate      = 11; // 重发的 spin，返回的是第一次的结果
 }
 
 message RoundStateReq {}
@@ -305,12 +354,12 @@ message GachaDrop {
   uint32 tpl_id   = 1;
   uint32 rarity   = 2;
   int64  count    = 3;
-  bool   by_pity  = 4;  // 是否由保底触发
+  bool   by_pity  = 4;  // 是不是保底给的
 }
 
 message GachaResp {
   repeated GachaDrop drops = 1;
-  uint32 pity_counter = 2;  // 距离下次保底还差多少
+  uint32 pity_counter = 2;  // 离下次保底还差几抽
   int64  balance      = 3;
   bool   duplicate    = 4;
 }
@@ -323,7 +372,7 @@ message JackpotInfoReq { string pool_id = 1; }
 message JackpotInfoResp {
   string pool_id = 1;
   int64  amount  = 2;
-  int64  seed    = 3;  // 底注（清零后的起始值）
+  int64  seed    = 3;  // 底注，清零后回到这个值
 }
 
 message JackpotClaimReq {
@@ -379,12 +428,12 @@ message GMGrantReq {
   int64  amount   = 3;
   repeated Attachment items = 4;
   string reason   = 5;
-  string ticket   = 6;  // 工单号，同时用作幂等键
+  string ticket   = 6;  // 工单号，兼作幂等键
 }
 
 message GMQueryReq {
   uint64 uid   = 1;
-  int32  limit = 2;  // 返回最近多少条流水
+  int32  limit = 2;  // 返回最近几条流水
 }
 
 message LedgerEntry {
@@ -392,7 +441,7 @@ message LedgerEntry {
   uint64 uid       = 2;
   string type      = 3;
   uint32 currency  = 4;
-  int64  amount    = 5;  // 正=入账 负=出账
+  int64  amount    = 5;  // 正入负出
   int64  balance   = 6;  // 变动后余额
   uint64 round_id  = 7;
   string game_id   = 8;

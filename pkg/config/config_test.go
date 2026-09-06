@@ -39,7 +39,7 @@ func TestLoadDerivesIdentity(t *testing.T) {
 	}
 }
 
-// §3.2 / §3.3：区服 ID 与进程序号是运营/部署概念，程序无法推断，必须显式配置。
+// /：区服 ID 与进程序号是运营/部署概念，程序无法推断，必须显式配置
 func TestMissingRequiredEnvIsFatal(t *testing.T) {
 	os.Clearenv()
 	t.Setenv("NODE_SEQ", "1")
@@ -54,7 +54,7 @@ func TestMissingRequiredEnvIsFatal(t *testing.T) {
 	}
 }
 
-// §3.4 第一道校验在配置装载阶段就要生效。
+// 第一道校验在配置装载阶段就要生效
 func TestNodeSeqBoundsEnforcedAtLoad(t *testing.T) {
 	env := baseEnv()
 	env["NODE_SEQ"] = "128"
@@ -64,7 +64,7 @@ func TestNodeSeqBoundsEnforcedAtLoad(t *testing.T) {
 	}
 }
 
-// §4.2：续租间隔必须显著小于 lease TTL，否则一次抖动就丢分片。
+// 续租间隔必须显著小于 lease TTL，否则一次抖动就丢分片
 func TestKeepAliveMustBeShorterThanTTL(t *testing.T) {
 	env := baseEnv()
 	env["SHARD_LEASE_TTL"] = "8s"
@@ -75,7 +75,7 @@ func TestKeepAliveMustBeShorterThanTTL(t *testing.T) {
 	}
 }
 
-// §4.2：nodeID 心跳与分片 lease 的阈值取舍相反，不能配反。
+// nodeID 心跳与分片 lease 的阈值取舍相反，不能配反
 func TestNodeBeatMustBeShorterThanStale(t *testing.T) {
 	env := baseEnv()
 	env["NODE_BEAT_INTERVAL"] = "20m"
@@ -86,7 +86,7 @@ func TestNodeBeatMustBeShorterThanStale(t *testing.T) {
 	}
 }
 
-// §4.1：分片数一经确定永不变更；这里至少保证它是 2 的幂，避免取模分布不均。
+// 分片数一经确定永不变更；这里至少保证它是 2 的幂，避免取模分布不均
 func TestShardCountMustBePowerOfTwo(t *testing.T) {
 	env := baseEnv()
 	env["SHARD_COUNT"] = "1000"
@@ -102,28 +102,28 @@ func TestDefaultsMatchDesign(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// §4.2：lease TTL 8s，续租 2.5s。
+	// lease TTL 8s，续租 2.5s
 	if cfg.ShardLeaseTTL.Seconds() != 8 {
 		t.Errorf("lease TTL = %v，设计值 8s", cfg.ShardLeaseTTL)
 	}
 	if cfg.ShardKeepAlive.Milliseconds() != 2500 {
 		t.Errorf("续租间隔 = %v，设计值 2.5s", cfg.ShardKeepAlive)
 	}
-	// §3.4：僵尸阈值 10min，心跳 30s。
+	// 僵尸阈值 10min，心跳 30s
 	if cfg.NodeStaleTimeout.Minutes() != 10 {
 		t.Errorf("僵尸阈值 = %v，设计值 10min", cfg.NodeStaleTimeout)
 	}
 	if cfg.NodeBeatInterval.Seconds() != 30 {
 		t.Errorf("nodeID 心跳 = %v，设计值 30s", cfg.NodeBeatInterval)
 	}
-	// §6.2：L1 5s，L2 60s。
+	// L1 5s，L2 60s
 	if cfg.FlushL1Interval.Seconds() != 5 {
 		t.Errorf("L1 间隔 = %v，设计值 5s", cfg.FlushL1Interval)
 	}
 	if cfg.FlushL2Interval.Seconds() != 60 {
 		t.Errorf("L2 间隔 = %v，设计值 60s", cfg.FlushL2Interval)
 	}
-	// §10.1：下线后保留 5~10 分钟。
+	// 下线后保留 5~10 分钟
 	if cfg.UnloadIdle.Minutes() != 10 {
 		t.Errorf("卸载延迟 = %v，设计值 10min", cfg.UnloadIdle)
 	}

@@ -11,26 +11,17 @@ import (
 	"github.com/gamedev/f1/pkg/metrics"
 )
 
-// ErrFenced 表示写入被 epoch fencing 拒绝：调用方已不是该分片的 owner。
+// ErrFenced 表示写入被 fencing 拒了，调用方已经不是这个分片的 owner
 //
-// 收到它的唯一正确反应是：丢弃该分片内存、停止服务、告警。绝不重试（§7.2）。
-// 此时内存已过期，重试只会加重损坏。
+// 收到它就该丢内存、停服务、告警，不要重试。内存已经过期，重试只会更糟
 var ErrFenced = errors.New("store: epoch 过期，写入被 fencing 拒绝")
 
-// ---------------------------------------------------------------------------
-// 所有写入都要先过 epoch 校验。
-//
-// 软保护（lease 自检）拦不住进程完全冻结后恢复的滞后写入，
-// 因此必须在存储层做最终裁决 —— 这是 D3 的全部理由。
-// ---------------------------------------------------------------------------
-
-// scriptRaiseEpoch 抬高分片 epoch。接管方在「加载数据之前」调用（§7.2）。
+// scriptRaiseEpoch 抬高分片 epoch，接管方在加载数据之前调用
 //
 //	KEYS[1] = epoch 键
-//	ARGV[1] = 新 epoch（etcd revision）
+//	ARGV[1] = 新 epoch，取 etcd revision
 //
-// 返回 {是否写入(1/0), 当前 epoch}。当前 epoch 已 >= 新值时不覆盖，
-// 防止乱序的接管请求把 epoch 拉低。
+// 返回 {是否写入, 当前 epoch}。已有更高的就不覆盖，免得乱序请求把 epoch 拉低
 var scriptRaiseEpoch = redis.NewScript(`
 local cur = tonumber(redis.call('GET', KEYS[1]) or '0')
 local new = tonumber(ARGV[1])
@@ -41,14 +32,14 @@ redis.call('SET', KEYS[1], new)
 return {1, new}
 `)
 
-// scriptWriteModules 带 epoch 校验的批量写入。
+// scriptWriteModules 带 epoch 校验的批量写入
 //
 //	KEYS[1]    = epoch 键
 //	KEYS[2..N] = 数据键
 //	ARGV[1]    = 调用方 epoch
 //	ARGV[2..N] = 对应的值
 //
-// 返回 1 写入成功，0 表示调用方已过期。
+// 返回 1 成功，0 表示调用方已过期
 var scriptWriteModules = redis.NewScript(`
 if tonumber(redis.call('GET', KEYS[1]) or '0') > tonumber(ARGV[1]) then
   return 0
@@ -59,7 +50,7 @@ end
 return 1
 `)
 
-// scriptWriteHash 带 epoch 校验的 HASH 写入（profile 只读摘要用）。
+// scriptWriteHash 带 epoch 校验的 HASH 写入，profile 摘要用
 //
 //	KEYS[1] = epoch 键
 //	KEYS[2] = HASH 键
@@ -84,7 +75,7 @@ end
 return 1
 `)
 
-// scriptWriteThrough 是 L0 写穿 + 幂等（§6.2）。
+// scriptWriteThrough L0 写穿加幂等
 //
 //	KEYS[1]    = epoch 键
 //	KEYS[2]    = 订单键（幂等）
@@ -119,7 +110,7 @@ end
 return {1, ARGV[3]}
 `)
 
-// scriptDeleteKeys 带 epoch 校验的删除（玩家卸载后清临时键等）。
+// scriptDeleteKeys 带 epoch 校验的删除
 //
 //	KEYS[1]    = epoch 键
 //	KEYS[2..N] = 待删键
@@ -134,28 +125,26 @@ end
 return 1
 `)
 
-// Fencer 在给定分片 epoch 下执行受保护的 Redis 写入。
+// Fencer 在给定分片 epoch 下执行受保护的 Redis 写入
 type Fencer struct {
 	rdb  redis.UniversalClient
 	keys *Keys
 	kind string
 }
 
-// NewFencer 构造 Fencer。
+// NewFencer 构造 Fencer
 func NewFencer(rdb redis.UniversalClient, keys *Keys, kind string) *Fencer {
 	return &Fencer{rdb: rdb, keys: keys, kind: kind}
 }
 
-// Keys 返回 key 生成器。
 func (f *Fencer) Keys() *Keys { return f.keys }
 
-// RDB 返回底层客户端（只读操作直接用）。
+// RDB 返回底层客户端（只读操作直接用）
 func (f *Fencer) RDB() redis.UniversalClient { return f.rdb }
 
-// RaiseEpoch 抬高分片 epoch。必须在加载数据之前调用（§7.2 / §10.2 步骤 5）。
+// RaiseEpoch 抬高分片 epoch，必须在加载数据之前调用
 //
-// 返回抬高后的 epoch。若 Redis 中已有更高的 epoch，说明有更新的 owner 已经接管，
-// 本次认领作废，返回 ErrFenced。
+// Redis 里已有更高的 epoch，说明有更新的 owner 接管了，本次认领作废
 func (f *Fencer) RaiseEpoch(ctx context.Context, shard uint32, epoch int64) error {
 	key := f.keys.Epoch(shard)
 	res, err := scriptRaiseEpoch.Run(ctx, f.rdb, []string{key}, epoch).Slice()
@@ -174,7 +163,7 @@ func (f *Fencer) RaiseEpoch(ctx context.Context, shard uint32, epoch int64) erro
 	return nil
 }
 
-// CurrentEpoch 读取 Redis 中记录的分片 epoch。
+// CurrentEpoch 读取 Redis 中记录的分片 epoch
 func (f *Fencer) CurrentEpoch(ctx context.Context, shard uint32) (int64, error) {
 	v, err := f.rdb.Get(ctx, f.keys.Epoch(shard)).Int64()
 	if errors.Is(err, redis.Nil) {
@@ -183,7 +172,7 @@ func (f *Fencer) CurrentEpoch(ctx context.Context, shard uint32) (int64, error) 
 	return v, err
 }
 
-// WriteModules 带 epoch 校验地写入若干键值。
+// WriteModules 带 epoch 校验地写入若干键值
 func (f *Fencer) WriteModules(ctx context.Context, shard uint32, epoch int64, kv map[string][]byte) error {
 	if len(kv) == 0 {
 		return nil
@@ -207,7 +196,7 @@ func (f *Fencer) WriteModules(ctx context.Context, shard uint32, epoch int64, kv
 	return nil
 }
 
-// WriteHash 带 epoch 校验地写入 HASH（profile 摘要）。
+// WriteHash 带 epoch 校验地写入 HASH（profile 摘要）
 func (f *Fencer) WriteHash(ctx context.Context, shard uint32, epoch int64, key string, ttlSec int64, fields []any) error {
 	if len(fields) == 0 {
 		return nil
@@ -226,15 +215,14 @@ func (f *Fencer) WriteHash(ctx context.Context, shard uint32, epoch int64, key s
 	return nil
 }
 
-// WriteThroughResult 是 L0 写穿的结果。
+// WriteThroughResult L0 写穿的结果
 type WriteThroughResult struct {
 	Duplicate bool   // true = 重复提交，Payload 是首次结果
 	Payload   []byte // 首次执行时即入参 payload
 }
 
-// WriteThrough 执行 L0 写穿：同步落 Redis 成功后调用方才改内存回包（§6.2）。
-//
-// 幂等由订单键保证：重复提交返回首次结果，不重复扣减。
+// WriteThrough 执行 L0 写穿，落盘成功后调用方才改内存回包。
+// 幂等靠订单键，重复提交返回首次结果
 func (f *Fencer) WriteThrough(ctx context.Context, shard uint32, epoch int64,
 	orderKey string, orderTTLSec int64, payload []byte, kv map[string][]byte) (*WriteThroughResult, error) {
 
@@ -271,7 +259,7 @@ func (f *Fencer) WriteThrough(ctx context.Context, shard uint32, epoch int64,
 	}
 }
 
-// Delete 带 epoch 校验地删除键。
+// Delete 带 epoch 校验地删除键
 func (f *Fencer) Delete(ctx context.Context, shard uint32, epoch int64, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
@@ -288,7 +276,7 @@ func (f *Fencer) Delete(ctx context.Context, shard uint32, epoch int64, keys ...
 	return nil
 }
 
-// LoadPlayer 用 pipeline 一次读回玩家全部模块（§10.1 懒加载）。
+// LoadPlayer 用 pipeline 一次读回玩家全部模块
 func (f *Fencer) LoadPlayer(ctx context.Context, uid uint64) (map[Module][]byte, error) {
 	pipe := f.rdb.Pipeline()
 	cmds := make(map[Module]*redis.StringCmd, len(AllModules))
@@ -324,7 +312,7 @@ func (f *Fencer) reportFenced(shard uint32, epoch int64) {
 // 统一提交：幂等 + 流水 + 数据，一次 Lua 原子完成
 // ---------------------------------------------------------------------------
 
-// scriptCommit 是资金类操作的统一入口。
+// scriptCommit 资金类操作的统一入口
 //
 //	KEYS[1]    = epoch 键
 //	KEYS[2]    = 幂等键（ARGV[2]==0 时不启用）
@@ -338,10 +326,9 @@ func (f *Fencer) reportFenced(shard uint32, epoch int64) {
 //	ARGV[6..5+E]   = E 条流水 JSON
 //	ARGV[6+E..]    = 对应 KEYS[4..] 的值
 //
-// 返回 {状态, 载荷}：1 首次执行 / 2 重复提交 / 0 epoch 过期。
+// 返回 {状态, 载荷}：1 首次执行，2 重复提交，0 epoch 过期。
 //
-// 把「幂等判定、流水追加、余额写入」放进同一个脚本，是为了让它们同生共死：
-// 任何一步没做，其余步骤都不会留下痕迹。这是资金正确性的地基。
+// 幂等判定、追流水、写余额放一个脚本里，是为了让它们同生共死
 var scriptCommit = redis.NewScript(`
 local useIdem = tonumber(ARGV[2]) > 0
 if useIdem then
@@ -371,39 +358,39 @@ end
 return {1, ARGV[3]}
 `)
 
-// CommitReq 描述一次资金类提交。
+// CommitReq 描述一次资金类提交
 type CommitReq struct {
 	Shard uint32
 	Epoch int64
 
-	// IdemKey 为空表示不做幂等（例如免费旋转的中途状态推进）。
+	// IdemKey 为空表示不做幂等
 	IdemKey     string
 	IdemTTLSec  int64
 	IdemPayload []byte
 
-	// LedgerKey 是玩家流水 Stream；Entries 为空时不写流水。
+	// LedgerKey 玩家流水的 Stream，Entries 为空时不写
 	LedgerKey    string
 	LedgerMaxLen int64
 	Entries      [][]byte
 
-	// KV 是要写入的玩家数据（已在 Actor 内序列化完成）。
+	// KV 要写的玩家数据，序列化在 Actor 里做完
 	KV map[string][]byte
 }
 
-// CommitResult 是提交结果。
+// CommitResult 提交结果
 type CommitResult struct {
 	Duplicate bool
 	Payload   []byte
 }
 
-// Commit 执行一次带幂等与流水的原子写入。
+// Commit 做一次带幂等和流水的原子写入
 func (f *Fencer) Commit(ctx context.Context, req *CommitReq) (*CommitResult, error) {
 	if req.LedgerKey == "" && len(req.Entries) > 0 {
 		return nil, errors.New("store: 有流水条目但未指定 Stream 键")
 	}
 	ledgerKey := req.LedgerKey
 	if ledgerKey == "" {
-		// KEYS[3] 必须占位；Lua 在 E==0 时不会碰它。
+		// KEYS[3] 得占个位，条目数为 0 时 Lua 不会碰它
 		ledgerKey = f.keys.Epoch(req.Shard)
 	}
 	idemKey := req.IdemKey

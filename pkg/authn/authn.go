@@ -1,10 +1,6 @@
-// Package authn 实现登录票据校验。
+// Package authn 校验登录票据
 //
-// 评审 P0-3 的修复：原来的 authenticate 恒真，客户端报什么 uid 就是什么 uid。
-// 真钱场景下这等于「知道别人 uid 就能登录别人账号」。
-//
-// 这里实现一个自包含的签名票据，同时留出对接外部账号服务的位置：
-// 真实项目里 token 通常由账号服务签发，网关只做校验，格式不变。
+// 格式 uid.exp.sig，自带签名。生产上通常由账号服务签发、网关只验，格式不变
 package authn
 
 import (
@@ -20,40 +16,39 @@ import (
 )
 
 var (
-	// ErrBadToken 表示票据格式错误或签名不符。
-	ErrBadToken = errors.New("authn: 登录票据无效")
-	// ErrTokenExpired 表示票据已过期。
-	ErrTokenExpired = errors.New("authn: 登录票据已过期")
-	// ErrUIDMismatch 表示票据里的 uid 与请求声明的不一致。
-	ErrUIDMismatch = errors.New("authn: 票据与 uid 不匹配")
-	// ErrDevAuthDisabled 表示未配置密钥且未显式开启开发模式。
+	// ErrBadToken 表示token格式错误或签名不符
+	ErrBadToken = errors.New("authn: 登录token无效")
+	// ErrTokenExpired 表示token已过期
+	ErrTokenExpired = errors.New("authn: 登录token已过期")
+	// ErrUIDMismatch 表示token里的 uid 与请求声明的不一致
+	ErrUIDMismatch = errors.New("authn: token与 uid 不匹配")
+	// ErrDevAuthDisabled 表示未配置密钥且未显式开启开发模式
 	ErrDevAuthDisabled = errors.New("authn: 未配置 LOGIN_SECRET；如确为本地开发，请显式设置 ALLOW_DEV_AUTH=true")
 )
 
-// TokenTTL 是票据默认有效期。
+// TokenTTL token默认有效期
 const TokenTTL = 30 * time.Minute
 
-// Verifier 校验登录票据。
+// Verifier 校验登录token
 type Verifier struct {
 	secret []byte
 	dev    bool
 }
 
-// NewVerifier 构造校验器。
+// NewVerifier 构造校验器
 //
-// secret 为空且 allowDev 为假时，所有登录都会被拒绝 —— 这是有意的：
-// 认证的默认行为必须是拒绝，"忘了配密钥" 不能变成 "谁都能登录"。
+// secret 为空且 allowDev 为假时所有登录都拒绝。忘了配密钥不该变成谁都能登
 func NewVerifier(secret string, allowDev bool) *Verifier {
 	return &Verifier{secret: []byte(secret), dev: allowDev}
 }
 
-// DevMode 报告是否处于「无密钥放行」的开发模式。
+// DevMode 报告是否处于「无密钥放行」的开发模式
 func (v *Verifier) DevMode() bool { return len(v.secret) == 0 && v.dev }
 
-// Enabled 报告是否在做真实校验。
+// Enabled 报告是否在做真实校验
 func (v *Verifier) Enabled() bool { return len(v.secret) > 0 }
 
-// Verify 校验 uid 与票据是否匹配。
+// Verify 校验 uid 与token是否匹配
 func (v *Verifier) Verify(uid uint64, token string) error {
 	if len(v.secret) == 0 {
 		if v.dev {
@@ -67,7 +62,7 @@ func (v *Verifier) Verify(uid uint64, token string) error {
 		return err
 	}
 	if tokUID != uid {
-		return fmt.Errorf("%w: 票据 uid=%d 请求 uid=%d", ErrUIDMismatch, tokUID, uid)
+		return fmt.Errorf("%w: token uid=%d 请求 uid=%d", ErrUIDMismatch, tokUID, uid)
 	}
 	if time.Now().After(time.UnixMilli(exp)) {
 		return fmt.Errorf("%w: 过期于 %s", ErrTokenExpired, time.UnixMilli(exp).Format(time.RFC3339))
@@ -78,7 +73,7 @@ func (v *Verifier) Verify(uid uint64, token string) error {
 	return nil
 }
 
-// Issue 签发一张票据。生产环境通常由账号服务签发，这里供测试与自建登录使用。
+// Issue 签发token，供自建登录与测试使用
 func (v *Verifier) Issue(uid uint64, ttl time.Duration) (string, error) {
 	if len(v.secret) == 0 {
 		return "", ErrDevAuthDisabled

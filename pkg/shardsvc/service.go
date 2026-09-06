@@ -1,8 +1,7 @@
-// Package shardsvc 把「分片认领 + Actor 运行时 + subject 订阅 + 交接」拼成
-// Lobby 与 Room 共用的骨架。
+// Package shardsvc 把分片认领、Actor 运行时、subject 订阅和交接拼在一起，
+// 供 Lobby 和 Room 复用
 //
-// 两个服务的差别只在业务状态（State）与分片键（uid vs roomID），
-// 所有权、fencing、刷盘、交接这些最贵最难的部分只应实现一次。
+// 两个服务的差别只在业务状态和分片键，所有权、fencing、刷盘、交接只实现一次
 package shardsvc
 
 import (
@@ -27,38 +26,36 @@ import (
 	"github.com/gamedev/f1/pkg/subject"
 )
 
-// State 是分片业务状态，在 shard.State 之上多了刷盘结果回报。
+// State 在 shard.State 之上多了刷盘结果回报
 type State interface {
 	shard.State
-	// OnFlushResult 处理刷盘结果：失败重新标脏，fenced 则丢弃内存。
-	// 由框架保证在该分片的 Actor goroutine 内调用。
+	// OnFlushResult 处理刷盘结果，失败重新标脏，fenced 就丢内存。
+	// 框架保证在该分片的 Actor goroutine 里调
 	OnFlushResult(res *store.Result)
-	// FlushAllSync 全量同步刷盘，用于交接与优雅下线（§10.2 / §10.3）。
+	// FlushAllSync 全量同步刷盘，交接和下线时用
 	FlushAllSync(ctx context.Context) error
 }
 
-// Factory 为一个分片创建业务状态。
+// Factory 为一个分片创建业务状态
 type Factory func(o shard.Ownership, svc *Service) State
 
-// Options 是构造参数。
+// Options 构造参数
 type Options struct {
 	Kind    shard.Kind
 	Node    *node.Node
 	Factory Factory
-	// Wildcard 返回某分片的订阅 subject（不带 queue group）。
+	// Wildcard 返回某分片的订阅 subject，不带 queue group
 	Wildcard func(shard uint32) string
-	// Tick 是 Actor 的心跳间隔，默认 1s。
+	// Tick Actor 的心跳间隔，默认 1s
 	Tick time.Duration
-	// Space 是分片空间大小，0 表示用 cfg.ShardCount。
-	// Match 按「模式×段位」分桶，空间远小于 1024。
+	// Space 分片空间大小，0 表示用 cfg.ShardCount。Match 按模式 × 段位分桶，小得多
 	Space uint32
-	// SkipEpoch 跳过 Redis epoch 抬高与 fencing。
-	// 只有完全不落盘的分片空间（如匹配池）才可以设为 true ——
-	// 一旦有数据落盘，fencing 就是不可省略的（§7.2）。
+	// SkipEpoch 跳过 epoch 抬高和 fencing。只有完全不落盘的分片空间才能设 true，
+	// 比如匹配池。只要有数据落盘就不能省
 	SkipEpoch bool
 }
 
-// Service 是分片型服务的骨架。
+// Service 分片型服务的骨架
 type Service struct {
 	kind    shard.Kind
 	node    *node.Node
@@ -76,7 +73,6 @@ type Service struct {
 	stopping bool
 }
 
-// New 构造骨架。
 func New(opt Options) *Service {
 	if opt.Tick <= 0 {
 		opt.Tick = time.Second
@@ -92,25 +88,19 @@ func New(opt Options) *Service {
 	return s
 }
 
-// Node 返回宿主 node。
 func (s *Service) Node() *node.Node { return s.node }
 
-// Fencer 返回带 epoch 校验的写入器。
 func (s *Service) Fencer() *store.Fencer { return s.fencer }
 
-// Flusher 返回刷盘 IO pool。
 func (s *Service) Flusher() *store.Flusher { return s.flusher }
 
-// Runtime 返回 Actor 运行时。
 func (s *Service) Runtime() *shard.Runtime { return s.runtime }
 
-// Claimer 返回分片认领器。
 func (s *Service) Claimer() *shard.Claimer { return s.claimer }
 
-// Kind 返回分片空间。
 func (s *Service) Kind() shard.Kind { return s.kind }
 
-// Start 启动刷盘池、Actor 运行时、控制面订阅与分片认领。
+// Start 启动刷盘池、Actor 运行时、控制面订阅与分片认领
 func (s *Service) Start(ctx context.Context) error {
 	cfg := s.node.Cfg
 
@@ -147,33 +137,31 @@ func (s *Service) Start(ctx context.Context) error {
 // 认领 / 释放
 // ---------------------------------------------------------------------------
 
-// onAcquire 按 §10.2 步骤 5 的顺序初始化分片：
+// onAcquire 初始化分片，顺序是抬 epoch、加载数据、订阅 subject
 //
-//	抬高 Redis epoch → 加载数据 → 订阅 subject → 服务
-//
-// 顺序不能变：epoch 必须在「加载数据之前」抬高，
-// 否则旧 owner 可能在我们加载完成之后又把旧内存刷进来（§7.2）。
+// 顺序不能换：epoch 必须在加载数据之前抬，否则旧 owner 可能在我们加载完之后
+// 又把旧内存刷进来
 func (s *Service) onAcquire(ctx context.Context, o shard.Ownership) error {
 	actx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 
-	// 1. 抬高 epoch —— 此后旧 owner 的任何写入都会被拒绝。
+	// 抬 epoch，此后旧 owner 写什么都会被拒
 	if !s.opts.SkipEpoch {
 		if err := s.fencer.RaiseEpoch(actx, o.Shard, o.Epoch); err != nil {
 			return fmt.Errorf("抬高 epoch 失败: %w", err)
 		}
 	}
 
-	// 2. 启动 Actor 并在其 goroutine 内加载数据。
+	// 起 Actor，数据在它自己的 goroutine 里加载
 	if err := s.runtime.Start(actx, o); err != nil {
 		s.dropState(o.Shard)
 		return fmt.Errorf("启动分片 Actor 失败: %w", err)
 	}
 
-	// 3. 订阅该分片的 subject —— 到这一步才开始对外服务。
+	// 订阅 subject，到这一步才开始对外服务
 	subj := s.opts.Wildcard(o.Shard)
 	sub, err := s.node.Bus.Subscribe(subj, func(m *bus.Msg) {
-		// NATS 回调是单 goroutine 串行的：这里只投递，不做业务（§5.4）。
+		// NATS 回调是单 goroutine 的，这里只投递
 		s.runtime.Post(o.Shard, m)
 	})
 	if err != nil {
@@ -188,27 +176,26 @@ func (s *Service) onAcquire(ctx context.Context, o shard.Ownership) error {
 	return nil
 }
 
-// onRelease 释放分片：先断流，再停 Actor（Actor 内按 reason 决定是否刷盘）。
+// onRelease 释放分片：先断流再停 Actor，刷不刷盘由 Actor 按 reason 决定
 func (s *Service) onRelease(ctx context.Context, o shard.Ownership, reason shard.ReleaseReason) {
-	// 1. 先退订，停止接收该分片的新消息。
+	// 先退订，不再收这个分片的新消息
 	s.mu.Lock()
 	sub := s.subs[o.Shard]
 	delete(s.subs, o.Shard)
 	s.mu.Unlock()
 	if sub != nil {
-		// Unsubscribe 而非 Drain：Drain 会继续处理 pending，
-		// 而此刻我们要么已不是 owner（不能再写），要么正要刷盘后交出去。
+		// 用 Unsubscribe 不用 Drain：这会儿要么已经不是 owner 不能再写，
+		// 要么马上就要刷盘交出去
 		_ = sub.Unsubscribe()
 	}
 
-	// 2. 停 Actor。State.Close 内部按 reason 决定：
-	//    graceful → 全量刷盘；lease_lost / fenced → 直接丢弃内存，绝不再写 Redis。
+	// 停 Actor。graceful 会全量刷盘，lease_lost 和 fenced 直接丢内存
 	s.runtime.Stop(o.Shard, reason)
 	s.dropState(o.Shard)
 }
 
 func (s *Service) onFreed(kind shard.Kind, sh uint32) {
-	// 通知其他实例尽快重扫，把「等下一轮 3s 扫描」压缩成一次事件。
+	// 发个事件让别的实例马上重扫，省掉等下一轮 3s 的时间
 	env, err := s.node.Bus.NewEnvelope(protocol.CmdHandoff, 0, "", &pb.HandoffReq{
 		Kind:     string(kind),
 		Shard:    sh,
@@ -230,7 +217,7 @@ func (s *Service) dropState(sh uint32) {
 	s.mu.Unlock()
 }
 
-// State 返回某分片的业务状态（仅供框架内部与测试使用）。
+// State 返回某分片的业务状态，给框架内部和测试用
 func (s *Service) State(sh uint32) (State, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -242,13 +229,13 @@ func (s *Service) State(sh uint32) (State, bool) {
 // 刷盘结果回报
 // ---------------------------------------------------------------------------
 
-// onFlushResult 在 IO goroutine 中被调用，只做一件事：把结果投递回对应 Actor。
+// onFlushResult 在 IO goroutine 里调，只负责把结果投回对应的 Actor
 func (s *Service) onFlushResult(res *store.Result) {
 	if res == nil {
 		return
 	}
 	if res.Fenced {
-		// epoch 过期：内存已不可信，立刻丢弃该分片并停止服务（§7.2）。
+		// epoch 过期，内存不可信了，丢掉停服务
 		logx.Error("刷盘被 fencing 拒绝，丢弃该分片内存并停止服务（告警）",
 			"kind", s.kind, "shard", res.Shard, "epoch", res.Epoch)
 		if s.claimer != nil {
@@ -259,13 +246,13 @@ func (s *Service) onFlushResult(res *store.Result) {
 	if len(res.Failed) == 0 && res.Err == nil {
 		return
 	}
-	// 失败重新标脏，绝不丢弃。
+	// 失败的重新标脏
 	if err := s.runtime.Do(res.Shard, func() {
 		if st, ok := s.State(res.Shard); ok {
 			st.OnFlushResult(res)
 		}
 	}); err != nil {
-		// 分片已不在本节点：内存也已丢弃，没有可标脏的对象了。
+		// 分片已经不在本节点，内存也丢了，没东西可标脏
 		logx.Warn("刷盘结果无法回报（分片已释放）", "kind", s.kind, "shard", res.Shard, "err", err)
 	}
 }
@@ -289,7 +276,7 @@ func (s *Service) subscribeControl() error {
 	}
 	s.ctlSubs = append(s.ctlSubs, sub)
 
-	// 别的实例释放了分片就立刻重扫，把接管窗口压到最小。
+	// 别的实例一释放就重扫，把接管窗口压小
 	sub, err = s.node.Bus.Subscribe(subject.ShardFreedEvt(string(s.kind)), func(m *bus.Msg) {
 		if s.claimer != nil {
 			s.claimer.TriggerRescan()
@@ -302,10 +289,7 @@ func (s *Service) subscribeControl() error {
 	return nil
 }
 
-// handleHandoff 是交接的「旧节点」侧（§10.2 步骤 2~4）。
-//
-//  2. 旧节点停止处理该分片新消息
-//  3. 旧节点全量刷盘 → 释放 etcd 锁 → 回复 READY
+// handleHandoff 交接的旧节点这一侧：停手、全量刷盘、释放锁、回 READY
 func (s *Service) handleHandoff(m *bus.Msg) {
 	var req pb.HandoffReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -321,7 +305,7 @@ func (s *Service) handleHandoff(m *bus.Msg) {
 	log := logx.Trace(m.Env.GetTraceId()).With("kind", s.kind, "shard", sh, "to", req.GetToNode())
 
 	if !s.claimer.Owns(sh) {
-		// 已经不持有了，对新节点来说这就是可以直接抢占，回 READY。
+		// 已经不持有了，新节点可以直接抢，回 READY
 		_ = m.Respond(&pb.HandoffResp{Ready: true, Reason: "not owned"})
 		return
 	}
@@ -337,7 +321,7 @@ func (s *Service) handleHandoff(m *bus.Msg) {
 	log.Info("收到分片交接请求，开始让出")
 	start := time.Now()
 
-	// Release 内部：退订（停止处理新消息）→ 停 Actor（graceful 触发全量刷盘）→ 删 etcd 键。
+	// Release 里面就是退订、停 Actor（会全量刷盘）、删 etcd 键
 	if err := s.claimer.Release(context.Background(), sh, shard.ReleaseGraceful); err != nil {
 		log.Error("分片交接失败", "err", err)
 		metrics.ShardHandoff.WithLabelValues(string(s.kind), "source", "fail").Inc()
@@ -350,7 +334,7 @@ func (s *Service) handleHandoff(m *bus.Msg) {
 	_ = m.Respond(&pb.HandoffResp{Ready: true})
 }
 
-// requestHandoff 是交接的「新节点」侧（§10.2 步骤 1、4）。
+// requestHandoff 交接的新节点这一侧
 func (s *Service) requestHandoff(ctx context.Context, sh uint32, fromNode string) error {
 	var resp pb.HandoffResp
 	err := s.node.Bus.Call(ctx, subject.CtlHandoff(fromNode), protocol.CmdHandoff, 0, "",
@@ -369,7 +353,7 @@ func (s *Service) requestHandoff(ctx context.Context, sh uint32, fromNode string
 	return nil
 }
 
-// handleShutdown 处理远程下线指令，走与信号完全相同的路径。
+// handleShutdown 处理远程下线指令，走和信号一样的路径
 func (s *Service) handleShutdown(m *bus.Msg) {
 	var req pb.ShutdownReq
 	_ = bus.Unpack(m.Env, &req)
@@ -377,7 +361,7 @@ func (s *Service) handleShutdown(m *bus.Msg) {
 	_ = m.Respond(&pb.Ack{Ok: true})
 
 	go func() {
-		time.Sleep(100 * time.Millisecond) // 让应答先发出去
+		time.Sleep(100 * time.Millisecond) // 等应答先发出去
 		_ = syscall.Kill(os.Getpid(), syscall.SIGTERM)
 	}()
 }
@@ -386,7 +370,7 @@ func (s *Service) handleShutdown(m *bus.Msg) {
 // 停机
 // ---------------------------------------------------------------------------
 
-// StopAccepting 停止接新请求：退订控制面，释放全部分片（各自全量刷盘）。
+// StopAccepting 退订控制面并释放全部分片，各分片会各自刷盘
 func (s *Service) StopAccepting(ctx context.Context) {
 	s.mu.Lock()
 	s.stopping = true
@@ -402,10 +386,10 @@ func (s *Service) StopAccepting(ctx context.Context) {
 	}
 }
 
-// FlushAll 确认刷盘队列已排空（§10.3 步骤 4）。
+// FlushAll 确认刷盘队列排空了
 //
-// 分片在 StopAccepting 阶段已各自全量刷盘，这里只做最终确认：
-// 队列没排空就说明还有数据没落地，必须等或告警，绝不能装作没事。
+// 分片在 StopAccepting 时已经各自刷过，这里只是最后确认一下。
+// 队列没排空就是还有数据没落地，不能装作没事
 func (s *Service) FlushAll(ctx context.Context) error {
 	if s.flusher == nil {
 		return nil
@@ -421,14 +405,13 @@ func (s *Service) FlushAll(ctx context.Context) error {
 	return nil
 }
 
-// Close 释放剩余资源。
 func (s *Service) Close(ctx context.Context) {
 	if s.runtime != nil {
 		s.runtime.StopAll(shard.ReleaseGraceful)
 	}
 }
 
-// ShardOf 计算实体所属分片。
+// ShardOf 算实体落在哪个分片
 func (s *Service) ShardOf(id uint64) uint32 {
 	if s.opts.Space > 0 {
 		return shard.Of(id, s.opts.Space)
@@ -436,7 +419,7 @@ func (s *Service) ShardOf(id uint64) uint32 {
 	return shard.Of(id, s.node.Cfg.ShardCount)
 }
 
-// Owns 报告本实例是否持有某实体所在分片。
+// Owns 报告某实体所在分片是不是本实例持有
 func (s *Service) Owns(id uint64) bool {
 	return s.claimer != nil && s.claimer.Owns(s.ShardOf(id))
 }

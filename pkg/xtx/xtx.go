@@ -1,16 +1,10 @@
-// Package xtx 实现 §8 的跨分片操作中转层。
+// Package xtx 跨分片操作的中转层
 //
-// 禁止分片之间直接操作对方内存。无跨分片事务，直接互操作在任一侧崩溃时
-// 会导致资源蒸发或复制，且事后无法审计。
+// 分片之间不许直接动对方内存。没有跨分片事务，直接互操作时任一侧崩溃就会
+// 资源凭空消失或者翻倍，事后还查不出来。
 //
-//	A 分片                      Redis                   B 分片
-//	  ├─ 扣道具（内存）
-//	  ├─ 写穿 tx:{txid} ────► {from,to,item,PENDING}
-//	  ├─ job.transfer.{txid} ───────────────────────►  ├─ SET tx:{txid}:done NX（幂等）
-//	                                                   ├─ 加道具（内存）
-//	                                                   └─ 标记 COMPLETED
-//
-// 邮件附件、交易、公会仓库、组队奖励、给离线玩家发奖全部走这一套。
+// 流程是发起方先扣再写穿 tx 记录，投一条 job，接收方用 txid 幂等去重后入账。
+// 邮件附件、交易、公会仓库、组队奖励、给离线玩家发奖都走这一套
 package xtx
 
 import (
@@ -28,7 +22,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// State 是转移状态。
+// State 转移状态
 type State string
 
 const (
@@ -36,7 +30,7 @@ const (
 	StateCompleted State = "COMPLETED"
 )
 
-// Record 是一笔跨分片转移。
+// Record 一笔跨分片转移
 type Record struct {
 	TxID      string            `json:"txid"`
 	FromUID   uint64            `json:"from_uid"` // 0 表示系统发放（发奖、发信）
@@ -54,10 +48,10 @@ type Record struct {
 	Extra     map[string]string `json:"extra,omitempty"`
 }
 
-// ErrDuplicate 表示该 txid 已被接收方处理过。
+// ErrDuplicate 表示这个 txid 已经处理过了
 var ErrDuplicate = errors.New("xtx: 该转移已完成（幂等去重）")
 
-// scriptBegin 发起方写穿：原子写入 tx 记录 + 入 PENDING 索引 + 落盘扣减后的玩家数据。
+// scriptBegin 发起方写穿：tx 记录、PENDING 索引、扣减后的玩家数据一起落
 //
 //	KEYS[1]    = epoch 键
 //	KEYS[2]    = tx 记录键
@@ -69,7 +63,7 @@ var ErrDuplicate = errors.New("xtx: 该转移已完成（幂等去重）")
 //	ARGV[4]    = 记录 TTL 秒（0 = 不过期）
 //	ARGV[5..]  = 对应 KEYS[4..] 的值
 //
-// 返回 1 成功；0 = epoch 过期；2 = txid 已存在（重复发起，不重复扣减）。
+// 返回 1 成功，0 epoch 过期，2 txid 已存在
 var scriptBegin = redis.NewScript(`
 if redis.call('EXISTS', KEYS[2]) == 1 then
   return 2
@@ -90,7 +84,7 @@ end
 return 1
 `)
 
-// scriptClaim 接收方幂等去重 + 写穿。
+// scriptClaim 接收方去重加写穿
 //
 //	KEYS[1]    = epoch 键（接收方分片）
 //	KEYS[2]    = done 标记键
@@ -99,7 +93,7 @@ return 1
 //	ARGV[2]    = done 标记 TTL 秒
 //	ARGV[3..]  = 对应 KEYS[3..] 的值
 //
-// 返回 1 首次处理；2 重复投递（跳过）；0 epoch 过期。
+// 返回 1 首次处理，2 重复投递，0 epoch 过期
 var scriptClaim = redis.NewScript(`
 if redis.call('SET', KEYS[2], ARGV[1], 'NX', 'EX', tonumber(ARGV[2])) == false then
   return 2
@@ -114,7 +108,7 @@ end
 return 1
 `)
 
-// scriptComplete 标记 COMPLETED 并移出 PENDING 索引。
+// scriptComplete 标记完成并从 PENDING 索引里摘掉
 //
 //	KEYS[1] = tx 记录键
 //	KEYS[2] = tx pending 索引键
@@ -130,7 +124,7 @@ redis.call('SET', KEYS[1], ARGV[1], 'KEEPTTL')
 return 1
 `)
 
-// Manager 管理跨分片转移的 Redis 侧状态。
+// Manager 管理跨分片转移的 Redis 侧状态
 type Manager struct {
 	rdb     redis.UniversalClient
 	keys    *store.Keys
@@ -138,10 +132,10 @@ type Manager struct {
 	doneTTL time.Duration
 }
 
-// NewManager 构造管理器。
+// NewManager 构造管理器
 //
-// recTTL 决定 tx 记录保留多久（审计用）；doneTTL 决定幂等标记保留多久 ——
-// 它必须明显长于任何可能的重投窗口（JetStream MaxAge + 扫描周期），否则会重复发放。
+// recTTL 是 tx 记录留多久，审计用。doneTTL 是幂等标记留多久，
+// 必须明显长于任何可能的重投窗口，否则会重复发放
 func NewManager(rdb redis.UniversalClient, keys *store.Keys, recTTL, doneTTL time.Duration) *Manager {
 	if recTTL <= 0 {
 		recTTL = 7 * 24 * time.Hour
@@ -152,10 +146,9 @@ func NewManager(rdb redis.UniversalClient, keys *store.Keys, recTTL, doneTTL tim
 	return &Manager{rdb: rdb, keys: keys, recTTL: recTTL, doneTTL: doneTTL}
 }
 
-// Begin 发起方写穿：tx 记录 + PENDING 索引 + 扣减后的玩家数据，一次 Lua 原子完成。
+// Begin 发起方写穿，一次 Lua 把 tx 记录、PENDING 索引和扣减后的玩家数据都落下去
 //
-// 「发起方先扣除并写穿，确保资源不会凭空增加」（§8）。
-// 因此 playerKV 必须是「已经扣减过」的玩家模块序列化结果。
+// playerKV 必须已经是扣减过的状态。先扣再写，资源就不会凭空多出来
 func (m *Manager) Begin(ctx context.Context, epoch int64, rec *Record, playerKV map[string][]byte) error {
 	if rec.TxID == "" {
 		return errors.New("xtx: txid 不能为空")
@@ -199,9 +192,7 @@ func (m *Manager) Begin(ctx context.Context, epoch int64, rec *Record, playerKV 
 	}
 }
 
-// Claim 接收方幂等去重 + 写穿入账后的玩家数据。
-//
-// 返回 (false, nil) 表示这是重复投递，应直接 Ack 而不重复入账。
+// Claim 接收方去重后入账。返回 (false, nil) 说明是重复投递，直接 Ack 就行
 func (m *Manager) Claim(ctx context.Context, epoch int64, rec *Record, playerKV map[string][]byte) (bool, error) {
 	keys := make([]string, 0, len(playerKV)+2)
 	args := make([]any, 0, len(playerKV)+2)
@@ -229,11 +220,9 @@ func (m *Manager) Claim(ctx context.Context, epoch int64, rec *Record, playerKV 
 	}
 }
 
-// Complete 标记转移完成并移出 PENDING 索引。
+// Complete 标记转移完成并摘出 PENDING 索引
 //
-// 由接收方处理成功后回调（或由发起方 owner 在收到确认后调用）。
-// 即使这一步失败也不影响正确性：done 标记已经存在，重投会被幂等拦下，
-// 扫描器只会多做一次无害的重投。
+// 这一步失败也没关系：done 标记已经在了，重投会被幂等拦下，扫描器最多白跑一次
 func (m *Manager) Complete(ctx context.Context, rec *Record) error {
 	old, err := json.Marshal(rec)
 	if err != nil {
@@ -255,7 +244,6 @@ func (m *Manager) Complete(ctx context.Context, rec *Record) error {
 	return nil
 }
 
-// Get 读取一笔转移记录。
 func (m *Manager) Get(ctx context.Context, fromShard uint32, txid string) (*Record, error) {
 	raw, err := m.rdb.Get(ctx, m.keys.Tx(fromShard, txid)).Bytes()
 	if errors.Is(err, redis.Nil) {
@@ -271,9 +259,7 @@ func (m *Manager) Get(ctx context.Context, fromShard uint32, txid string) (*Reco
 	return &rec, nil
 }
 
-// ScanPending 返回某分片中创建时间早于 before 的 PENDING 转移。
-//
-// 「后台扫描器兜底，定期重投超时 PENDING」（§8）。
+// ScanPending 返回某分片里创建时间早于 before 的 PENDING 转移，给补偿扫描用
 func (m *Manager) ScanPending(ctx context.Context, shard uint32, before time.Time, limit int64) ([]*Record, error) {
 	if limit <= 0 {
 		limit = 200
@@ -291,7 +277,7 @@ func (m *Manager) ScanPending(ctx context.Context, shard uint32, before time.Tim
 	for _, raw := range members {
 		var rec Record
 		if err := json.Unmarshal([]byte(raw), &rec); err != nil {
-			// 索引里出现坏数据：直接摘掉，避免扫描器每轮都被它绊住。
+			// 索引里有坏数据就摘掉，别让扫描器每轮都被它绊住
 			_ = m.rdb.ZRem(ctx, m.keys.TxPending(shard), raw).Err()
 			logx.Warn("PENDING 索引中存在无法解析的记录，已移除", "shard", shard, "raw", raw)
 			continue
@@ -301,12 +287,12 @@ func (m *Manager) ScanPending(ctx context.Context, shard uint32, before time.Tim
 	return out, nil
 }
 
-// PendingCount 返回某分片的 PENDING 数量。
+// PendingCount 返回某分片的 PENDING 数量
 func (m *Manager) PendingCount(ctx context.Context, shard uint32) (int64, error) {
 	return m.rdb.ZCard(ctx, m.keys.TxPending(shard)).Result()
 }
 
-// Requeue 更新 PENDING 索引中的记录（重试计数 +1，score 后移避免同一轮重复扫到）。
+// Requeue 更新 PENDING 索引：重试计数加一，score 往后推，免得同一轮又扫到
 func (m *Manager) Requeue(ctx context.Context, rec *Record) error {
 	old, err := json.Marshal(rec)
 	if err != nil {
@@ -330,5 +316,5 @@ func (m *Manager) Requeue(ctx context.Context, rec *Record) error {
 	return err
 }
 
-// NewTxID 由雪花 ID 生成 txid。带前缀便于在 Redis 里一眼识别。
+// NewTxID 用雪花生成 txid，带个前缀方便在 Redis 里认
 func NewTxID(snowflake uint64) string { return fmt.Sprintf("tx%d", snowflake) }

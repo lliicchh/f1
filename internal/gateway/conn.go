@@ -1,8 +1,7 @@
-// Package gateway 实现网关：连接管理、编解码、下行推送（§2.1 / §9）。
+// Package gateway WebSocket 连接、编解码、下行推送
 //
-// 网关不持有任何玩家数据，因此可以无脑 LB 轮询；
-// 它只订阅 push.gate.{gateID} 与 push.broadcast 两个 subject，
-// 订阅数与在线人数无关（§9.1 / D4）。
+// 不持有玩家数据，可以轮询负载
+// 只订 push.gate.{gateID} 和 push.broadcast 两个 subject
 package gateway
 
 import (
@@ -25,16 +24,16 @@ import (
 
 // 帧格式：[4 字节大端长度][Envelope protobuf]
 const (
-	maxFrameSize   = 1 << 20 // 1MB，与 NATS 默认 max_payload 对齐
+	maxFrameSize   = 1 << 20 // 1MB，与 NATS 默认 max_payload 相同
 	writeQueueSize = 256
 	readTimeout    = 90 * time.Second
 	writeTimeout   = 10 * time.Second
 )
 
-// ErrFrameTooLarge 表示客户端发来的帧超限。
+// ErrFrameTooLarge 客户端的请求数据帧超限
 var ErrFrameTooLarge = errors.New("gateway: 帧长度超限")
 
-// Conn 是一条客户端连接。
+// Conn 一条客户端连接
 type Conn struct {
 	ID   uint64
 	UID  atomic.Uint64 // 登录后填充
@@ -44,7 +43,6 @@ type Conn struct {
 	once sync.Once
 	done chan struct{}
 
-	// 简单令牌桶，防单连接刷请求。
 	tokens   atomic.Int64
 	lastFill atomic.Int64
 }
@@ -62,7 +60,7 @@ func newConn(id uint64, raw net.Conn, gw *Service) *Conn {
 	return c
 }
 
-// allow 实现每秒 rateQPS 个请求、突发 rateBurst 的令牌桶。
+// allow 每秒 rateQPS 个、突发 rateBurst 的令牌桶
 func (c *Conn) allow() bool {
 	now := time.Now().UnixMilli()
 	last := c.lastFill.Load()
@@ -78,7 +76,7 @@ func (c *Conn) allow() bool {
 	return c.tokens.Add(-1) >= 0
 }
 
-// Send 把一帧数据放进发送队列。永不阻塞读循环。
+// Send 把一帧丢进发送队列，不阻塞读循环
 func (c *Conn) Send(data []byte) bool {
 	select {
 	case <-c.done:
@@ -89,14 +87,14 @@ func (c *Conn) Send(data []byte) bool {
 	case c.out <- data:
 		return true
 	default:
-		// 发送队列积压说明客户端读不动了，直接断开比无限缓冲安全。
+		// 队列积压说明客户端读不动了，断开比无限缓冲安全
 		logx.Warn("客户端发送队列已满，断开连接", "conn", c.ID, "uid", c.UID.Load())
 		c.Close()
 		return false
 	}
 }
 
-// SendEnv 编码并发送一个 Envelope。
+// SendEnv 编码并发送一个 Envelope
 func (c *Conn) SendEnv(env *pb.Envelope) bool {
 	data, err := encode(env)
 	if err != nil {
@@ -105,7 +103,7 @@ func (c *Conn) SendEnv(env *pb.Envelope) bool {
 	return c.Send(data)
 }
 
-// SendPush 发送一条下行推送。
+// SendPush 发送一条下行推送
 func (c *Conn) SendPush(push protocol.Push, payload []byte, traceID string) bool {
 	return c.SendEnv(&pb.Envelope{
 		Cmd:      uint32(push),
@@ -117,7 +115,6 @@ func (c *Conn) SendPush(push protocol.Push, payload []byte, traceID string) bool
 	})
 }
 
-// Close 关闭连接。
 func (c *Conn) Close() {
 	c.once.Do(func() {
 		close(c.done)
@@ -125,7 +122,6 @@ func (c *Conn) Close() {
 	})
 }
 
-// Closed 报告连接是否已关闭。
 func (c *Conn) Closed() bool {
 	select {
 	case <-c.done:
@@ -135,7 +131,7 @@ func (c *Conn) Closed() bool {
 	}
 }
 
-// readLoop 读取并分发客户端请求。
+// readLoop 读取并分发客户端请求
 func (c *Conn) readLoop() {
 	defer c.gw.onDisconnect(c)
 	defer c.Close()
@@ -176,7 +172,7 @@ func (c *Conn) readLoop() {
 	}
 }
 
-// writeLoop 串行写出，避免多 goroutine 并发写同一 socket。
+// writeLoop 串行写，不要多个 goroutine 抢同一个 socket
 func (c *Conn) writeLoop() {
 	defer c.Close()
 	for {
@@ -195,7 +191,7 @@ func (c *Conn) writeLoop() {
 	}
 }
 
-// drainOut 在关闭前尽力把队列中的数据发完（用于「服务器维护，请重连」）。
+// drainOut 关闭前尽量把队列里的数据发完
 func (c *Conn) drainOut(timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for len(c.out) > 0 && time.Now().Before(deadline) {

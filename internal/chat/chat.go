@@ -1,8 +1,6 @@
-// Package chat 实现聊天服：消息中继，不存数据（§2.1）。
+// Package chat 聊天中继，不存数据
 //
-// 因为不持有任何数据，Chat 是全套设计里唯一可以放心用 queue group 的业务服务：
-// 谁处理都一样，负载均衡即可。这与 §2.3 的约束并不矛盾 ——
-// 那条约束针对的是「持有玩家数据的服务」。
+// 不持有数据，可以用 queue group 处理
 package chat
 
 import (
@@ -24,10 +22,10 @@ import (
 	"github.com/gamedev/f1/pkg/subject"
 )
 
-// MaxTextLen 是单条消息的最大长度。
+// MaxTextLen 单条消息的最大长度
 const MaxTextLen = 512
 
-// Service 是聊天服务。
+// Service 聊天服务
 type Service struct {
 	node     *node.Node
 	sessions *session.Store
@@ -35,19 +33,16 @@ type Service struct {
 	subs     []*nats.Subscription
 }
 
-// New 构造聊天服务。
 func New() *Service { return &Service{} }
 
-// Name 实现 node.Service。
 func (s *Service) Name() string { return "chat" }
 
-// Start 启动服务。
 func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.node = n
 	s.sessions = session.NewStore(n.Redis, n.Keys, n.Cfg.SessionTTL)
 	s.profiles = profile.NewReader(n.Redis, n.Keys)
 
-	// 用 queue group：Chat 不持有数据，多实例竞争消费就是我们要的负载均衡。
+	// Chat 不持有数据，多实例竞争消费正好就是要的负载均衡
 	sub, err := n.Bus.QueueSubscribe(subject.ChatWildcard(), "chat", s.onChat)
 	if err != nil {
 		return err
@@ -57,20 +52,16 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	return nil
 }
 
-// NotifyClients 实现 node.Service。
 func (s *Service) NotifyClients(ctx context.Context) {}
 
-// StopAccepting 退订。
 func (s *Service) StopAccepting(ctx context.Context) {
 	for _, sub := range s.subs {
 		_ = sub.Unsubscribe()
 	}
 }
 
-// FlushAll 聊天不存数据。
 func (s *Service) FlushAll(ctx context.Context) error { return nil }
 
-// Close 无资源可释放。
 func (s *Service) Close(ctx context.Context) {}
 
 func (s *Service) onChat(m *bus.Msg) {
@@ -100,7 +91,7 @@ func (s *Service) onChat(m *bus.Msg) {
 	}
 	_ = m.Respond(&pb.Ack{Ok: true})
 
-	// 昵称从只读摘要拿：不唤醒发送者的玩家对象，也不经过其 owner（§6.5）。
+	// 昵称从只读摘要拿，不唤醒发送者的玩家对象
 	go s.relay(m, &req, msg, from)
 }
 
@@ -115,7 +106,7 @@ func (s *Service) relay(m *bus.Msg, req *pb.ChatReq, msg *pb.ChatMsg, from uint6
 
 	switch req.GetChannel() {
 	case protocol.ChanWorld:
-		// 全服公告类走 push.broadcast（§9.3）。
+		// 世界频道走全服广播
 		s.broadcast(msg, traceID)
 
 	case protocol.ChanPrivate:
@@ -130,11 +121,11 @@ func (s *Service) relay(m *bus.Msg, req *pb.ChatReq, msg *pb.ChatMsg, from uint6
 		if err != nil || len(uids) == 0 {
 			return
 		}
-		// 公会广播不走 NATS 广播：查路由表，按 gateID 聚合（§9.3）。
+		// 公会广播查路由表按 gateID 聚合，不走 NATS 广播
 		s.toPlayers(ctx, uids, msg, traceID)
 
 	case protocol.ChanRoom:
-		// 房间广播交给房间分片：它才知道成员列表。
+		// 房间广播交给房间分片，只有它知道成员列表
 		sh := shard.Of(req.GetRoomId(), s.node.Cfg.ShardCount)
 		payload, err := proto.Marshal(msg)
 		if err != nil {
@@ -155,7 +146,7 @@ func (s *Service) relay(m *bus.Msg, req *pb.ChatReq, msg *pb.ChatMsg, from uint6
 	}
 }
 
-// toPlayers 按 gateID 聚合后定向推送。
+// toPlayers 按 gateID 聚合后推
 func (s *Service) toPlayers(ctx context.Context, uids []uint64, msg *pb.ChatMsg, traceID string) {
 	byGate, err := s.sessions.GroupByGate(ctx, uids)
 	if err != nil {

@@ -1,6 +1,6 @@
-// Command gateway 是网关：连接管理、编解码、下行推送（§2.1）
+// Command gateway 网关，管连接、编解码和下行推送
 //
-// 启动所需环境变量见 deploy/s1.env；其中 SERVER_ID 与 NODE_SEQ 必须手动配置（§3.2 / §3.3）。
+// 启动要的环境变量见 deploy/s1.env，其中 SERVER_ID 和 NODE_SEQ 必须手动配
 package main
 
 import (
@@ -9,10 +9,9 @@ import (
 )
 
 func main() {
-	// Bootstrap 内部依次完成：
-	//   §3.4 第一道 NODE_SEQ 越界校验 → 第二道 etcd nodeID 唯一性自检
-	//   §6.4 Redis 关键配置校验（maxmemory-policy 必须 noeviction）
-	// 任一步失败都直接退出，绝不降级 —— 降级就是在生产制造重复 ID 或丢档。
+	// Bootstrap 里会依次做 NODE_SEQ 越界校验、etcd 上的 nodeID 唯一性检查，
+	// 以及 Redis 关键配置校验。任何一步不过就退出，而非降级，降级会造成生产环境
+	// 重复 ID 或者数据丢失
 	n, err := node.Bootstrap("gateway", "lobby")
 	if err != nil {
 		node.Fatal(err)

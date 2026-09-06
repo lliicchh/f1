@@ -1,12 +1,9 @@
-// Package profile 实现 §6.5 的 profile 只读摘要（CQRS 读模型）。
+// Package profile 玩家的只读摘要，也就是 CQRS 的读模型
 //
-// 问题：查看好友资料、排行榜、给离线玩家发邮件时，需要读一个不在本分片、
-// 甚至不在线的玩家数据。为看一眼头像就加载整个玩家对象进内存是不可接受的。
+// 查好友资料、排行榜、给离线玩家发信时都要读别人的数据。为看一眼头像就把
+// 整个玩家对象加载进内存不划算，所以 owner 分片在数据变更时顺手写一份轻量快照。
 //
-// 方案：owner 分片在数据变更时顺带写一份轻量快照。
-// 只读、允许滞后几秒、任何进程可直接读 Redis，不经过 owner，不唤醒玩家对象。
-//
-// 写模型在内存（owner 独占强一致），读模型在 Redis（人人可读，最终一致）。
+// 只读，允许滞后几秒，任何进程都能直接读 Redis
 package profile
 
 import (
@@ -21,7 +18,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// 字段名。用 HASH 而非 protobuf blob，任何进程/运维工具都能直接看懂与部分读取。
+// 用 HASH 不用 protobuf，运维工具能直接看，也能只读其中几个字段
 const (
 	FieldNick      = "nick"
 	FieldAvatar    = "avatar"
@@ -33,7 +30,7 @@ const (
 
 var allFields = []string{FieldNick, FieldAvatar, FieldLevel, FieldGuildID, FieldPower, FieldLastLogin}
 
-// Fields 把 Profile 转成 HSET 的 field/value 序列。
+// Fields 把 Profile 摊成 HSET 要的 field/value
 func Fields(p *pb.Profile) []any {
 	return []any{
 		FieldNick, p.GetNick(),
@@ -45,9 +42,8 @@ func Fields(p *pb.Profile) []any {
 	}
 }
 
-// HashWrite 构造一次带 epoch 校验的 profile 写入，交给刷盘器执行。
-//
-// profile 与玩家数据键共用 hash tag，因此可以和玩家模块在同一个 Lua/slot 中写。
+// HashWrite 构造一次带 epoch 校验的摘要写入，交给刷盘器。
+// 它和玩家键同 hash tag，能进同一个 Lua
 func HashWrite(keys *store.Keys, p *pb.Profile) *store.HashWrite {
 	return &store.HashWrite{
 		Key:    keys.Profile(p.GetUid()),
@@ -56,18 +52,17 @@ func HashWrite(keys *store.Keys, p *pb.Profile) *store.HashWrite {
 	}
 }
 
-// Reader 直接从 Redis 读摘要，不经过 owner 分片。
+// Reader 直接从 Redis 读摘要，不经过 owner
 type Reader struct {
 	rdb  redis.UniversalClient
 	keys *store.Keys
 }
 
-// NewReader 构造读取器。
 func NewReader(rdb redis.UniversalClient, keys *store.Keys) *Reader {
 	return &Reader{rdb: rdb, keys: keys}
 }
 
-// Get 读取单个玩家摘要。玩家从未存在时返回 nil。
+// Get 读一个玩家的摘要，没有就返回 nil
 func (r *Reader) Get(ctx context.Context, uid uint64) (*pb.Profile, error) {
 	vals, err := r.rdb.HMGet(ctx, r.keys.Profile(uid), allFields...).Result()
 	if err != nil {
@@ -79,7 +74,7 @@ func (r *Reader) Get(ctx context.Context, uid uint64) (*pb.Profile, error) {
 	return decode(uid, vals), nil
 }
 
-// GetMany 批量读取（好友列表、公会成员、排行榜展示）。
+// GetMany 批量读，好友列表、公会成员、排行榜都用它
 func (r *Reader) GetMany(ctx context.Context, uids []uint64) ([]*pb.Profile, error) {
 	if len(uids) == 0 {
 		return nil, nil
@@ -105,7 +100,7 @@ func (r *Reader) GetMany(ctx context.Context, uids []uint64) ([]*pb.Profile, err
 	return out, nil
 }
 
-// Exists 报告玩家是否存在过（不唤醒玩家对象）。
+// Exists 看这个玩家存不存在，不唤醒玩家对象
 func (r *Reader) Exists(ctx context.Context, uid uint64) (bool, error) {
 	n, err := r.rdb.Exists(ctx, r.keys.Profile(uid)).Result()
 	return n > 0, err
@@ -151,28 +146,25 @@ func decode(uid uint64, vals []any) *pb.Profile {
 
 // ---------------------------------------------------------------------------
 
-// Rank 是基于摘要的排行榜（ZSET）。
+// Rank 基于摘要的排行榜，同样允许滞后
 //
-// 它同样是读模型：允许滞后，读取不经过 owner。
-// 排行榜键不与玩家键同 slot，因此不纳入 epoch fencing —— 陈旧 owner 偶发写入
-// 只会让某个名次短暂不准，下次真 owner 更新即自愈，不构成资产不一致。
+// 榜单键和玩家键不同 slot，所以没纳入 fencing。陈旧 owner 偶尔写一下只会让
+// 某个名次短暂不准，下次真 owner 更新就好了，不影响资产
 type Rank struct {
 	rdb  redis.UniversalClient
 	keys *store.Keys
 	name string
 }
 
-// NewRank 构造排行榜。
 func NewRank(rdb redis.UniversalClient, keys *store.Keys, name string) *Rank {
 	return &Rank{rdb: rdb, keys: keys, name: name}
 }
 
-// Update 更新玩家分数。
 func (r *Rank) Update(ctx context.Context, uid uint64, score float64) error {
 	return r.rdb.ZAdd(ctx, r.keys.Rank(r.name), redis.Z{Score: score, Member: uid}).Err()
 }
 
-// Entry 是一条榜单记录。
+// Entry 一条榜单记录
 type Entry struct {
 	Rank    int64
 	UID     uint64
@@ -180,7 +172,7 @@ type Entry struct {
 	Profile *pb.Profile
 }
 
-// Top 取前 n 名，并批量补齐摘要。
+// Top 取前 n 名并补上摘要
 func (r *Rank) Top(ctx context.Context, n int64, reader *Reader) ([]Entry, error) {
 	zs, err := r.rdb.ZRevRangeWithScores(ctx, r.keys.Rank(r.name), 0, n-1).Result()
 	if err != nil {
@@ -198,7 +190,7 @@ func (r *Rank) Top(ctx context.Context, n int64, reader *Reader) ([]Entry, error
 	}
 	profiles, err := reader.GetMany(ctx, uids)
 	if err != nil {
-		return entries, nil // 榜单本体已可用，摘要缺失不算失败
+		return entries, nil // 榜单能用就行，摘要没读到不算失败
 	}
 	byUID := make(map[uint64]*pb.Profile, len(profiles))
 	for _, p := range profiles {
@@ -210,7 +202,7 @@ func (r *Rank) Top(ctx context.Context, n int64, reader *Reader) ([]Entry, error
 	return entries, nil
 }
 
-// RankOf 返回玩家名次（从 1 开始），不在榜返回 0。
+// RankOf 返回名次，从 1 开始，不在榜返回 0
 func (r *Rank) RankOf(ctx context.Context, uid uint64) (int64, error) {
 	n, err := r.rdb.ZRevRank(ctx, r.keys.Rank(r.name), strconv.FormatUint(uid, 10)).Result()
 	if errors.Is(err, redis.Nil) {
@@ -222,7 +214,7 @@ func (r *Rank) RankOf(ctx context.Context, uid uint64) (int64, error) {
 	return n + 1, nil
 }
 
-// FromBase 由玩家 base 模块构造摘要。
+// FromBase 从 base 模块拼出摘要
 func FromBase(b *pb.PlayerBase) *pb.Profile {
 	return &pb.Profile{
 		Uid:       b.GetUid(),
@@ -235,5 +227,5 @@ func FromBase(b *pb.PlayerBase) *pb.Profile {
 	}
 }
 
-// StaleAfter 是摘要允许的滞后上限，仅用于文档与监控参考。
+// StaleAfter 摘要允许滞后的上限，给监控参考用
 const StaleAfter = 10 * time.Second

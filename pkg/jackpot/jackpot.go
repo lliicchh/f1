@@ -1,20 +1,10 @@
-// Package jackpot 实现累积奖池。
+// Package jackpot 累积奖池
 //
-// 评审 P1-5 的修复。奖池是 slots 最典型的「全局唯一强一致状态」：
-// 所有玩家往里投，某一个玩家全部拿走，中间不能多也不能少。
+// 注入直接用 INCRBY，它本来就是原子的。每次 spin 发个 job 给 World 是把一次加法
+// 做成分布式事务，慢且多一个失败点。
 //
-// 设计上有两个容易做错的地方，这里都绕开了：
-//
-//	一、不要把每次注入做成分布式事务。
-//	    「每次 spin 发一个 job 给 World 服累加」是常见的过度设计：
-//	    把一个原子加法变成了跨进程消息，既慢又多一个失败点。
-//	    这里注入直接用 Redis INCRBY —— 它本来就是原子的。
-//
-//	二、中奖派彩必须走跨分片中转层（§8）。
-//	    奖池和玩家在不同的 slot、不同的 owner，直接互相操作内存是禁止的。
-//	    这里的做法是：原子地「清零奖池 + 落一条 PENDING 派彩记录」，
-//	    再由中转层把钱幂等地打给玩家。奖池清零与派彩记录同生共死，
-//	    因此不会出现「池子清了但没人拿到钱」。
+// 中奖走跨分片那一套：原子地清零奖池并落一条 PENDING 派彩记录，再由中转层幂等
+// 打给玩家。两步同生共死，不会出现池子清了但没人拿到钱的情况
 package jackpot
 
 import (
@@ -30,10 +20,10 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// ErrEmpty 表示奖池为空（已被人拿走，或尚未注入）。
+// ErrEmpty 表示奖池是空的，可能刚被人拿走
 var ErrEmpty = errors.New("jackpot: 奖池为空")
 
-// Payout 是一笔待处理的奖池派彩。
+// Payout 一笔待处理的奖池派彩
 type Payout struct {
 	TxID      string `json:"txid"`
 	PoolID    string `json:"pool"`
@@ -45,7 +35,7 @@ type Payout struct {
 	Retries   int    `json:"retries,omitempty"`
 }
 
-// scriptContribute 注入奖池。首次注入时用底注初始化。
+// scriptContribute 注入奖池，键不存在时先用底注初始化
 //
 //	KEYS[1] = 奖池金额键
 //	ARGV[1] = 注入额
@@ -57,18 +47,16 @@ end
 return redis.call('INCRBY', KEYS[1], ARGV[1])
 `)
 
-// scriptClaim 原子地「清零奖池 + 落一条 PENDING 派彩记录」。
+// scriptClaim 清零奖池并落一条待派彩记录
 //
 //	KEYS[1] = 奖池金额键
-//	KEYS[2] = 派彩待处理索引（与奖池同 slot）
+//	KEYS[2] = 待派彩索引，与奖池同 slot
 //	ARGV[1] = 派彩记录 JSON
 //	ARGV[2] = 重置后的底注
-//	ARGV[3] = 索引 score（创建时间）
+//	ARGV[3] = 索引 score
 //
-// 返回中奖金额；奖池为空或不足底注时返回 0（不产生派彩记录）。
-//
-// 这两步必须同生共死：只清零不记账 = 钱凭空消失；
-// 只记账不清零 = 同一笔奖池被发两次。
+// 返回中奖金额，池子不足底注返回 0。
+// 两步得一起成：只清零钱就没了，只记账同一笔会发两次
 var scriptClaim = redis.NewScript(`
 local amount = tonumber(redis.call('GET', KEYS[1]) or '0')
 local seed = tonumber(ARGV[2])
@@ -80,29 +68,26 @@ redis.call('ZADD', KEYS[2], tonumber(ARGV[3]), ARGV[1])
 return amount
 `)
 
-// Manager 管理奖池。
+// Manager 管理奖池
 type Manager struct {
 	rdb   redis.UniversalClient
 	keys  *store.Keys
 	pools map[string]*gameconf.Jackpot
 }
 
-// NewManager 构造管理器。
 func NewManager(rdb redis.UniversalClient, keys *store.Keys, pools map[string]*gameconf.Jackpot) *Manager {
 	return &Manager{rdb: rdb, keys: keys, pools: pools}
 }
 
-// Pool 返回奖池配置。
 func (m *Manager) Pool(id string) (*gameconf.Jackpot, bool) {
 	p, ok := m.pools[id]
 	return p, ok
 }
 
-// Contribute 往奖池注入，返回注入后的金额。
+// Contribute 往奖池注入，返回注入后的水位
 //
-// 注入额来自玩家已经扣掉的投注（那一步已经原子落盘并记了流水），
-// 因此这里失败不会造成玩家资损，只会让池子少涨一点；
-// 流水里记着 JP_CONTRIB，对账时可以查出差额并补回。
+// 这笔钱在扣注那一步已经落盘并记了 JP_CONTRIB，所以这里失败只是池子少涨，
+// 玩家不亏，差额可以照流水补回来
 func (m *Manager) Contribute(ctx context.Context, poolID string, amount int64) (int64, error) {
 	if amount <= 0 {
 		return 0, nil
@@ -115,7 +100,7 @@ func (m *Manager) Contribute(ctx context.Context, poolID string, amount int64) (
 		[]string{m.keys.Jackpot(poolID)}, amount, cfg.Seed).Int64()
 }
 
-// Amount 读取奖池当前水位。任何进程可读，属于只读投影。
+// Amount 读奖池水位，任何进程都能读
 func (m *Manager) Amount(ctx context.Context, poolID string) (int64, error) {
 	v, err := m.rdb.Get(ctx, m.keys.Jackpot(poolID)).Int64()
 	if errors.Is(err, redis.Nil) {
@@ -127,9 +112,9 @@ func (m *Manager) Amount(ctx context.Context, poolID string) (int64, error) {
 	return v, err
 }
 
-// Claim 中奖：原子清零并生成待派彩记录。
+// Claim 中奖：清零池子并生成待派彩记录
 //
-// 返回的 Payout 需要由调用方通过必达任务打给玩家（幂等由 txid 保证）。
+// 返回的 Payout 要由调用方通过必达任务打给玩家，幂等靠 txid
 func (m *Manager) Claim(ctx context.Context, poolID string, uid, roundID uint64, txid string) (*Payout, error) {
 	cfg, ok := m.pools[poolID]
 	if !ok {
@@ -141,9 +126,8 @@ func (m *Manager) Claim(ctx context.Context, poolID string, uid, roundID uint64,
 		Currency: cfg.Currency, RoundID: roundID,
 		CreatedAt: time.Now().UnixMilli(),
 	}
-	// 金额要等 Lua 返回才知道，先用占位序列化再回填是不行的（索引里存的是 JSON），
-	// 因此分两步：先读一次水位算出金额，再用该金额构造记录去 CAS。
-	// 竞争由 Lua 内的「amount <= seed 就放弃」兜底：并发中奖时只有一个能拿到。
+	// 索引里存的是 JSON，没法先占位再回填金额，所以先读一次水位再拿它去 CAS。
+	// 并发中奖由 Lua 里的 amount <= seed 兜底，只有一个能拿到
 	cur, err := m.Amount(ctx, poolID)
 	if err != nil {
 		return nil, err
@@ -168,8 +152,7 @@ func (m *Manager) Claim(ctx context.Context, poolID string, uid, roundID uint64,
 		return nil, ErrEmpty
 	}
 	if won != cur {
-		// 读到的水位与清零时的实际金额不同（期间有人注入）。
-		// 以 Lua 返回的为准，并把差额补回池子 —— 绝不能让玩家少拿或多拿。
+		// 读水位到清零之间有人又注入了。以 Lua 返回的为准，差额补回池子
 		diff := won - p.Amount
 		if diff > 0 {
 			if _, cerr := m.Contribute(ctx, poolID, diff); cerr != nil {
@@ -180,7 +163,7 @@ func (m *Manager) Claim(ctx context.Context, poolID string, uid, roundID uint64,
 	return p, nil
 }
 
-// PendingPayouts 返回待处理的派彩记录，供补偿扫描器重投。
+// PendingPayouts 返回待派彩记录，给补偿扫描重投用
 func (m *Manager) PendingPayouts(ctx context.Context, poolID string, before time.Time, limit int64) ([]*Payout, error) {
 	if limit <= 0 {
 		limit = 100
@@ -203,7 +186,7 @@ func (m *Manager) PendingPayouts(ctx context.Context, poolID string, before time
 	return out, nil
 }
 
-// Settle 标记一笔派彩已完成，从待处理索引移除。
+// Settle 标记一笔派彩已完成，从待处理索引移除
 func (m *Manager) Settle(ctx context.Context, p *Payout) error {
 	blob, err := json.Marshal(p)
 	if err != nil {
@@ -220,7 +203,7 @@ func (m *Manager) Settle(ctx context.Context, p *Payout) error {
 	return err
 }
 
-// Requeue 重投一笔派彩（推后 score，避免同一轮重复扫到）。
+// Requeue 重投一笔派彩，score 往后推，免得同一轮又扫到
 func (m *Manager) Requeue(ctx context.Context, p *Payout) error {
 	old, err := json.Marshal(p)
 	if err != nil {
@@ -241,7 +224,7 @@ func (m *Manager) Requeue(ctx context.Context, p *Payout) error {
 	return err
 }
 
-// LastWinner 返回上一次中奖信息，用于展示。
+// LastWinner 返回上次中奖信息，给展示用
 func (m *Manager) LastWinner(ctx context.Context, poolID string) (uid uint64, amount int64, at int64, err error) {
 	vals, err := m.rdb.HMGet(ctx, m.keys.JackpotMeta(poolID),
 		"last_winner", "last_amount", "last_at").Result()
@@ -260,9 +243,7 @@ func (m *Manager) LastWinner(ctx context.Context, poolID string) (uid uint64, am
 	return uint64(parse(vals[0])), parse(vals[1]), parse(vals[2]), nil
 }
 
-// ContributionOf 按万分比算出本次投注应注入的金额。
-//
-// 用整数运算（向下取整），不用浮点：奖池金额是钱，不接受浮点舍入。
+// ContributionOf 按万分比算注入额。整数向下取整，钱不能用浮点
 func ContributionOf(bet, bp int64) int64 {
 	if bet <= 0 || bp <= 0 {
 		return 0

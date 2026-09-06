@@ -35,7 +35,7 @@ func sampleRec(txid string) *Record {
 	}
 }
 
-// §8：发起方先扣除并写穿 —— tx 记录与扣减后的玩家数据必须在同一个 Lua 里原子落盘。
+// 发起方先扣除并写穿，tx 记录与扣减后的玩家数据必须在同一个 Lua 里原子落盘
 func TestBeginWritesRecordAndPlayerAtomically(t *testing.T) {
 	m, f, keys := newEnv(t)
 	ctx := context.Background()
@@ -62,7 +62,7 @@ func TestBeginWritesRecordAndPlayerAtomically(t *testing.T) {
 	}
 }
 
-// 重复发起同一 txid 不得重复扣减。
+// 重复发起同一 txid 不得重复扣减
 func TestBeginIsIdempotent(t *testing.T) {
 	m, f, keys := newEnv(t)
 	ctx := context.Background()
@@ -82,7 +82,7 @@ func TestBeginIsIdempotent(t *testing.T) {
 	}
 }
 
-// §8：接收方用 txid 幂等去重。
+// 接收方用 txid 幂等去重
 func TestClaimIsIdempotent(t *testing.T) {
 	m, f, keys := newEnv(t)
 	ctx := context.Background()
@@ -96,7 +96,7 @@ func TestClaimIsIdempotent(t *testing.T) {
 		t.Fatalf("首次入账应成功: applied=%v err=%v", applied, err)
 	}
 
-	// 重投：必须识别为重复，且不再写入。
+	// 重投：必须识别为重复，且不再写入
 	applied, err = m.Claim(ctx, 20, rec, map[string][]byte{key: []byte("credited-again")})
 	if err != nil {
 		t.Fatal(err)
@@ -109,7 +109,7 @@ func TestClaimIsIdempotent(t *testing.T) {
 	}
 }
 
-// 入账被 fencing 拒绝时，done 标记必须回滚 —— 否则这笔转移会永远卡在「已处理但没入账」。
+// 入账被 fencing 拒时 done 标记要回滚，否则这笔会卡在「已处理但没入账」
 func TestClaimRollsBackDoneMarkerWhenFenced(t *testing.T) {
 	m, f, keys := newEnv(t)
 	ctx := context.Background()
@@ -125,7 +125,7 @@ func TestClaimRollsBackDoneMarkerWhenFenced(t *testing.T) {
 		t.Fatal("被拒绝时 done 标记必须回滚，否则新 owner 重投会被误判为重复而永久丢失这笔资产")
 	}
 
-	// 新 owner 重试应能成功入账。
+	// 新 owner 重试应能成功入账
 	applied, err := m.Claim(ctx, 100, rec, map[string][]byte{key: []byte("ok")})
 	if err != nil || !applied {
 		t.Fatalf("新 owner 应能入账: applied=%v err=%v", applied, err)
@@ -151,7 +151,7 @@ func TestCompleteRemovesFromPendingIndex(t *testing.T) {
 	}
 }
 
-// §8：后台扫描器兜底，定期重投超时 PENDING。
+// 后台扫描器兜底，定期重投超时 PENDING
 func TestScanPendingFindsOnlyTimedOut(t *testing.T) {
 	m, f, keys := newEnv(t)
 	ctx := context.Background()
@@ -185,7 +185,7 @@ func TestRequeueBumpsRetries(t *testing.T) {
 	if err := m.Requeue(ctx, rec); err != nil {
 		t.Fatal(err)
 	}
-	// 重投后 score 被推到当前时刻，不会在同一轮被重复扫到。
+	// 重投后 score 被推到当前时刻，不会在同一轮被重复扫到
 	got, _ := m.ScanPending(ctx, rec.FromShard, time.Now().Add(-time.Minute), 100)
 	if len(got) != 0 {
 		t.Fatalf("重投后不应立刻再次被扫到，实际 %+v", got)

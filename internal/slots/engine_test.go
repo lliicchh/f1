@@ -17,7 +17,7 @@ func machine(t testing.TB) *gameconf.SlotMachine {
 	return m
 }
 
-// 可复算是审计与客服的地基：同种子 + 同配置 = 位对位一致的结果。
+// 同种子加同配置必须重放出一模一样的结果，客服查单和审计都靠这个
 func TestReplayIsDeterministic(t *testing.T) {
 	m := machine(t)
 
@@ -27,7 +27,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 	}
 	seedHex := src.SeedHex()
 
-	// 原始一局：10 次旋转。
+	// 先正常打一局，10 次
 	var original []*Result
 	var freeLeft, mult uint32
 	mult = 1
@@ -49,7 +49,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 		original = append(original, r)
 	}
 
-	// 用记录下来的种子重放。
+	// 拿记下来的种子重放
 	replayed, err := Replay(m, seedHex, 100, 10)
 	if err != nil {
 		t.Fatal(err)
@@ -77,7 +77,7 @@ func TestReplayIsDeterministic(t *testing.T) {
 	}
 }
 
-// 不同种子必须产出不同序列，否则说明种子根本没被用上。
+// 不同种子得出不同序列，不然说明种子压根没起作用
 func TestDifferentSeedsDiffer(t *testing.T) {
 	m := machine(t)
 	s1, _ := rng.NewRandom()
@@ -97,12 +97,12 @@ func TestDifferentSeedsDiffer(t *testing.T) {
 	}
 }
 
-// 用构造好的固定 grid 校验连线规则，不依赖随机。
+// 用固定的 grid 验连线规则，不掺随机
 func TestEvalLinesRules(t *testing.T) {
 	m := machine(t)
 	lineBet := int64(10)
 
-	// 造一台只有一条中间线的简化机器，便于精确断言。
+	// 造一台只有中间一条线的简化机器，好断言
 	simple := *m
 	simple.Paylines = [][]int{{1, 1, 1, 1, 1}}
 
@@ -141,7 +141,7 @@ func TestEvalLinesRules(t *testing.T) {
 	})
 
 	t.Run("必须左起连续", func(t *testing.T) {
-		// 首轴不是 A，中间三个 A 不算中奖。
+		// 首轴不是 A，中间那三个不算
 		g := mk([]gameconf.Symbol{
 			gameconf.SymKing, gameconf.SymAce, gameconf.SymAce,
 			gameconf.SymAce, gameconf.SymTen,
@@ -155,7 +155,7 @@ func TestEvalLinesRules(t *testing.T) {
 	})
 
 	t.Run("首轴wild取最优", func(t *testing.T) {
-		// wild + 两个 MAJOR：应按 MAJOR 三连赔付（比 wild 自身三连的候选更高时取高者）。
+		// wild 加两个 MAJOR，应该按 MAJOR 三连赔
 		g := mk([]gameconf.Symbol{
 			gameconf.SymWild, gameconf.SymMajor, gameconf.SymMajor,
 			gameconf.SymTen, gameconf.SymTen,
@@ -182,14 +182,14 @@ func TestEvalLinesRules(t *testing.T) {
 	})
 }
 
-// 散落符号按总注赔付，且位置无关。
+// 散落符号按总注赔，跟位置无关
 func TestEvalScatter(t *testing.T) {
 	m := machine(t)
 	g := make(Grid, 5)
 	for i := range g {
 		g[i] = []gameconf.Symbol{gameconf.SymTen, gameconf.SymTen, gameconf.SymTen}
 	}
-	// 在三个不同轴的不同行上放 scatter。
+	// 在三个不同轴的不同行放 scatter
 	g[0][0] = gameconf.SymScatter
 	g[2][1] = gameconf.SymScatter
 	g[4][2] = gameconf.SymScatter
@@ -203,7 +203,7 @@ func TestEvalScatter(t *testing.T) {
 	}
 }
 
-// 免费旋转：触发次数正确，且 retrigger 开关生效。
+// 免费旋转的触发次数要对，retrigger 开关也要生效
 func TestFreeSpinAward(t *testing.T) {
 	m := machine(t)
 
@@ -213,7 +213,7 @@ func TestFreeSpinAward(t *testing.T) {
 	if got := freeSpinsFor(m, 2, false); got != 0 {
 		t.Fatalf("2 个散落不应授予免费旋转，实际 %d", got)
 	}
-	// 开启 retrigger 时，免费旋转中再次触发仍应授予。
+	// 开了 retrigger，免费旋转里再触发还应该给
 	if got := freeSpinsFor(m, 3, true); got == 0 {
 		t.Fatal("配置允许 retrigger，免费旋转中应能再次触发")
 	}
@@ -225,7 +225,7 @@ func TestFreeSpinAward(t *testing.T) {
 	}
 }
 
-// 免费旋转不判定奖池：它没有投注，不该参与奖池抽奖。
+// 免费旋转没投注，不该参与奖池
 func TestFreeSpinNeverHitsJackpot(t *testing.T) {
 	m := *machine(t)
 	m.JackpotChanceNum = 1
@@ -242,7 +242,7 @@ func TestFreeSpinNeverHitsJackpot(t *testing.T) {
 	}
 }
 
-// 倍数只作用于派彩，不改变连线判定。
+// 倍数只影响派彩，不改连线判定
 func TestMultiplierAppliesToWin(t *testing.T) {
 	m := machine(t)
 	seed, _ := rng.NewSeed()
@@ -258,7 +258,7 @@ func TestMultiplierAppliesToWin(t *testing.T) {
 	}
 }
 
-// 下注档位校验：不在档位内的投注必须被拒绝，否则等于让客户端自定金额。
+// 不在档位内的投注必须拒，否则等于让客户端自己定金额
 func TestBetLevelValidation(t *testing.T) {
 	m := machine(t)
 	for _, b := range m.BetLevels {
@@ -273,7 +273,7 @@ func TestBetLevelValidation(t *testing.T) {
 	}
 }
 
-// 线注必须整除：否则每一把都在产生舍入误差，累积成对账差额。
+// 线注必须整除，否则每把都在攒舍入误差
 func TestBetDivisibleByLines(t *testing.T) {
 	c := gameconf.Default()
 	for id, m := range c.Slots {

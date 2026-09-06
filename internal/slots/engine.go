@@ -1,11 +1,8 @@
-// Package slots 是老虎机的数学引擎：旋转、连线判定、免费旋转状态机。
+// Package slots 老虎机的数学引擎：旋转、连线、免费旋转状态机
 //
-// 这个包刻意做成纯函数式的：输入（机器配置 + 随机源 + 回合状态）确定，
-// 输出就完全确定。没有 IO、没有时间、没有全局状态。
-//
-// 这是「可复算」的前提 —— 客服拿到 round_id，取出当时的配置版本与种子，
-// 在这里重放一遍，就能得到与当时位对位一致的结果。
-// 任何把时间戳、随机全局量、玩家实时状态引入本包的改动都会破坏这个性质。
+// 这里全是纯函数，没有 IO、没有时间、没有全局状态。客服拿 round_id 找出当时的
+// 配置版本和种子就能重放。
+// 往这个包里塞时间戳或者玩家实时状态，复算就不成立了
 package slots
 
 import (
@@ -15,10 +12,10 @@ import (
 	"github.com/gamedev/f1/pkg/rng"
 )
 
-// Grid 是一次旋转的可见符号矩阵，按 [轴][行] 组织。
+// Grid 一次旋转的可见符号，按 [轴][行] 排
 type Grid [][]gameconf.Symbol
 
-// Flat 按「先轴后行」展开成一维，用于协议传输。
+// Flat 按先轴后行摊成一维，走协议用
 func (g Grid) Flat() []uint32 {
 	out := make([]uint32, 0, len(g)*len(g[0]))
 	for _, reel := range g {
@@ -29,7 +26,7 @@ func (g Grid) Flat() []uint32 {
 	return out
 }
 
-// LineWin 是一条中奖线的结果。
+// LineWin 一条中奖线的结果
 type LineWin struct {
 	Line   int
 	Symbol gameconf.Symbol
@@ -37,32 +34,32 @@ type LineWin struct {
 	Payout int64
 }
 
-// Result 是一次旋转的完整结果。
+// Result 一次旋转的完整结果
 type Result struct {
 	Grid  Grid
-	Stops []int // 各轴停止位置，复算校验用
+	Stops []int // 各轴停位，复算时对照用
 
 	Lines      []LineWin
-	LineWin    int64 // 连线派彩合计（未乘免费旋转倍数）
+	LineWin    int64 // 连线派彩合计，没乘倍数
 	Scatter    int
 	ScatterWin int64
-	// Multiplier 是本次旋转应用的倍数（免费旋转期间 > 1）。
+	// Multiplier 本次旋转的倍数，免费旋转期间大于 1
 	Multiplier uint32
-	// TotalWin 是本次旋转的最终派彩，已乘倍数。
+	// TotalWin 最终派彩，已经乘过倍数
 	TotalWin int64
 
 	FreeSpinsAwarded uint32
 	JackpotHit       bool
 }
 
-// Spin 执行一次旋转。
+// Spin 转一次
 //
-//	bet        本次旋转的总投注（免费旋转时传触发时的投注额，用于计算赔付基数）
-//	multiplier 本次旋转的倍数（普通旋转传 1）
-//	free       是否为免费旋转（影响是否判定奖池）
+//	bet        总投注，免费旋转传触发时的额度，用来算赔付基数
+//	multiplier 倍数，普通旋转传 1
+//	free       是不是免费旋转，影响要不要判奖池
 //
-// 随机数消费顺序是固定的：先每轴一个停止位，再（非免费时）一个奖池判定。
-// 这个顺序是复算契约的一部分，不能随意调整。
+// 随机数的消费顺序固定：先每轴一个停位，付费时再来一个奖池判定。
+// 这是复算契约，别动
 func Spin(m *gameconf.SlotMachine, src *rng.Source, bet int64, multiplier uint32, free bool) (*Result, error) {
 	if m == nil {
 		return nil, fmt.Errorf("slots: 机器配置为空")
@@ -97,19 +94,16 @@ func Spin(m *gameconf.SlotMachine, src *rng.Source, bet int64, multiplier uint32
 
 	res.TotalWin = (res.LineWin + res.ScatterWin) * int64(multiplier)
 
-	// 奖池判定只在付费旋转时进行：免费旋转没有投注，不参与奖池。
+	// 免费旋转没投注，不参与奖池
 	if !free && m.JackpotPool != "" && m.JackpotChanceDen > 0 {
 		res.JackpotHit = src.Chance(m.JackpotChanceNum, m.JackpotChanceDen)
 	}
 	return res, nil
 }
 
-// evalLines 判定所有中奖线。
-//
-// 规则（业界标准的「左起连线」）：
-//   - 从最左轴开始，向右连续出现同一符号（wild 可替代）才算连
-//   - 一条线只取最高的一种赔付
-//   - scatter 不参与连线，它按「散落」单独计算
+// evalLines 判所有中奖线，规则是标准的左起连线：
+// 从最左轴往右连续出现同一符号才算，wild 能替代，一条线只取最高的那种赔付。
+// scatter 不参与连线，单独按散落算
 func evalLines(m *gameconf.SlotMachine, grid Grid, lineBet int64) ([]LineWin, int64) {
 	var wins []LineWin
 	var total int64
@@ -117,8 +111,7 @@ func evalLines(m *gameconf.SlotMachine, grid Grid, lineBet int64) ([]LineWin, in
 	for li, line := range m.Paylines {
 		best := LineWin{Line: li}
 
-		// 候选符号：首轴的符号本身；若首轴是 wild，则所有可赔付符号都要试一遍，
-		// 取赔付最高的那个（wild 自身也是候选）。
+		// 首轴是什么就试什么，是 wild 就所有符号试一遍取最高
 		candidates := candidateSymbols(m, grid[0][line[0]])
 
 		for _, sym := range candidates {
@@ -145,7 +138,7 @@ func evalLines(m *gameconf.SlotMachine, grid Grid, lineBet int64) ([]LineWin, in
 	return wins, total
 }
 
-// candidateSymbols 返回该线需要尝试的符号集合。
+// candidateSymbols 返回这条线要试哪些符号
 func candidateSymbols(m *gameconf.SlotMachine, first gameconf.Symbol) []gameconf.Symbol {
 	if first == m.Scatter {
 		return nil // scatter 不连线
@@ -153,7 +146,7 @@ func candidateSymbols(m *gameconf.SlotMachine, first gameconf.Symbol) []gameconf
 	if first != m.Wild {
 		return []gameconf.Symbol{first}
 	}
-	// 首轴是 wild：它可以充当任何可赔付符号，逐个试取最优。
+	// 首轴是 wild，能当任何符号用，逐个试
 	out := make([]gameconf.Symbol, 0, len(m.Paytable))
 	for sym := range m.Paytable {
 		if sym == m.Scatter {
@@ -175,7 +168,7 @@ func payoutFor(m *gameconf.SlotMachine, sym gameconf.Symbol, count int, lineBet 
 	return table[count-1] * lineBet
 }
 
-// evalScatter 统计散落符号并计算赔付（按总注计）。
+// evalScatter 数散落符号并按总注算赔付
 func evalScatter(m *gameconf.SlotMachine, grid Grid, bet int64) (int, int64) {
 	count := 0
 	for _, reel := range grid {
@@ -195,7 +188,7 @@ func evalScatter(m *gameconf.SlotMachine, grid Grid, bet int64) (int, int64) {
 	return count, m.ScatterPays[idx] * bet
 }
 
-// freeSpinsFor 返回本次旋转授予的免费旋转次数。
+// freeSpinsFor 返回这次转送几个免费旋转
 func freeSpinsFor(m *gameconf.SlotMachine, scatter int, free bool) uint32 {
 	if scatter <= 0 || len(m.FreeSpins) == 0 {
 		return 0
@@ -210,10 +203,9 @@ func freeSpinsFor(m *gameconf.SlotMachine, scatter int, free bool) uint32 {
 	return m.FreeSpins[idx]
 }
 
-// Replay 用记录下来的种子重放一个回合到指定的旋转次数，返回最后一次旋转的结果。
+// Replay 用记下来的种子重放一整局
 //
-// 这是客服与审计的入口：给定 round_id 对应的 (配置版本, 种子, spin_index)，
-// 就能复现出当时的每一次旋转。
+// 客服和审计从这里进：有配置版本、种子和 spin_index，就能复现当时每一次旋转
 func Replay(m *gameconf.SlotMachine, seedHex string, bet int64, spins int) ([]*Result, error) {
 	seed, err := rng.ParseSeed(seedHex)
 	if err != nil {

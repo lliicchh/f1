@@ -1,85 +1,148 @@
-// Package logx 提供全局结构化日志。
+// Package logx 全局结构化日志，底层是 zap
 //
-// 所有日志强制携带 node 字段（nodeID），跨进程排查时与 Envelope.from_node 对齐；
-// 业务日志应尽量带上 trace_id（Envelope.trace_id），这是全链路追踪的唯一抓手（§5.3）。
+// 日志都带 node 字段，业务日志尽量再带上 trace_id，出问题时全靠这两个串起来
 package logx
 
 import (
 	"context"
-	"log/slog"
 	"os"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
+
+// Logger 带固定字段的日志句柄
+//
+// 只暴露 key-value 形式，不提供 zap 的 printf / print 风格。混用两种风格
+// 会让日志一半能被检索一半不能
+type Logger struct{ s *zap.SugaredLogger }
+
+func (l *Logger) Debug(msg string, kv ...any) { l.s.Debugw(msg, kv...) }
+func (l *Logger) Info(msg string, kv ...any)  { l.s.Infow(msg, kv...) }
+func (l *Logger) Warn(msg string, kv ...any)  { l.s.Warnw(msg, kv...) }
+func (l *Logger) Error(msg string, kv ...any) { l.s.Errorw(msg, kv...) }
+
+// With 派生一个带附加字段的句柄
+func (l *Logger) With(kv ...any) *Logger { return &Logger{s: l.s.With(kv...)} }
+
+// Zap 返回底层 SugaredLogger，给需要传 zap 的第三方库用
+func (l *Logger) Zap() *zap.SugaredLogger { return l.s }
 
 var (
 	mu     sync.RWMutex
-	base   *slog.Logger = slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	base   *Logger
+	pkgLvl *Logger // 比 base 多跳一层，给本包的顶层函数用
 	nodeID string
+	undo   func()
 )
 
-// Init 配置全局 logger。level 取 debug/info/warn/error，format 取 text/json。
+func init() { set(newCore(stdout(), zapcore.InfoLevel, "text"), "") }
+
+func stdout() zapcore.WriteSyncer { return zapcore.Lock(os.Stdout) }
+
+// Init 配置全局 logger，level 取 debug/info/warn/error，format 取 text/json
 func Init(node, level, format string) {
-	var lv slog.Level
+	var lv zapcore.Level
 	switch strings.ToLower(level) {
 	case "debug":
-		lv = slog.LevelDebug
+		lv = zapcore.DebugLevel
 	case "warn", "warning":
-		lv = slog.LevelWarn
+		lv = zapcore.WarnLevel
 	case "error":
-		lv = slog.LevelError
+		lv = zapcore.ErrorLevel
 	default:
-		lv = slog.LevelInfo
+		lv = zapcore.InfoLevel
 	}
+	set(newCore(stdout(), lv, format), node)
+}
 
-	opts := &slog.HandlerOptions{Level: lv}
-	var h slog.Handler
+func newCore(w zapcore.WriteSyncer, lv zapcore.Level, format string) zapcore.Core {
+	enc := zapcore.EncoderConfig{
+		TimeKey:        "time",
+		LevelKey:       "level",
+		MessageKey:     "msg",
+		CallerKey:      "caller",
+		LineEnding:     zapcore.DefaultLineEnding,
+		EncodeTime:     zapcore.ISO8601TimeEncoder,
+		EncodeLevel:    zapcore.CapitalLevelEncoder,
+		EncodeCaller:   zapcore.ShortCallerEncoder,
+		EncodeDuration: zapcore.StringDurationEncoder,
+	}
+	var e zapcore.Encoder
 	if strings.ToLower(format) == "json" {
-		h = slog.NewJSONHandler(os.Stdout, opts)
+		e = zapcore.NewJSONEncoder(enc)
 	} else {
-		h = slog.NewTextHandler(os.Stdout, opts)
+		e = zapcore.NewConsoleEncoder(enc)
+	}
+	return zapcore.NewCore(e, w, lv)
+}
+
+// set 换掉全局 logger
+//
+// 两个句柄的差别只在 caller 跳几层：base 给 Logger 的方法用，pkgLvl 给本包的
+// Debug/Info/Warn/Error 用，后者中间多垫了一个函数。搞错了 caller 就会全指到
+// logx.go 上，等于没有
+func set(core zapcore.Core, node string) {
+	z := zap.New(core)
+	if node != "" {
+		z = z.With(zap.String("node", node))
 	}
 
 	mu.Lock()
 	defer mu.Unlock()
+	if undo != nil {
+		undo()
+	}
 	nodeID = node
-	base = slog.New(h).With("node", node)
-	slog.SetDefault(base)
+	base = &Logger{s: z.WithOptions(zap.AddCaller(), zap.AddCallerSkip(1)).Sugar()}
+	pkgLvl = &Logger{s: z.WithOptions(zap.AddCaller(), zap.AddCallerSkip(2)).Sugar()}
+	// 第三方库直接用标准库 log 打的东西也收进来
+	undo = zap.RedirectStdLog(z)
 }
 
-// L 返回全局 logger。
-func L() *slog.Logger {
+// L 返回全局 logger
+func L() *Logger {
 	mu.RLock()
 	defer mu.RUnlock()
 	return base
 }
 
-// NodeID 返回当前进程 nodeID（Init 之后有效）。
+func pkg() *Logger {
+	mu.RLock()
+	defer mu.RUnlock()
+	return pkgLvl
+}
+
+// NodeID 返回当前进程 nodeID（Init 之后有效）
 func NodeID() string {
 	mu.RLock()
 	defer mu.RUnlock()
 	return nodeID
 }
 
-// With 返回带附加字段的 logger。
-func With(args ...any) *slog.Logger { return L().With(args...) }
+func With(kv ...any) *Logger { return L().With(kv...) }
 
-// Trace 返回带 trace_id 的 logger。
-func Trace(traceID string) *slog.Logger { return L().With("trace_id", traceID) }
+func Trace(traceID string) *Logger { return L().With("trace_id", traceID) }
 
-func Debug(msg string, args ...any) { L().Debug(msg, args...) }
-func Info(msg string, args ...any)  { L().Info(msg, args...) }
-func Warn(msg string, args ...any)  { L().Warn(msg, args...) }
-func Error(msg string, args ...any) { L().Error(msg, args...) }
+func Debug(msg string, kv ...any) { pkg().Debug(msg, kv...) }
+func Info(msg string, kv ...any)  { pkg().Info(msg, kv...) }
+func Warn(msg string, kv ...any)  { pkg().Warn(msg, kv...) }
+func Error(msg string, kv ...any) { pkg().Error(msg, kv...) }
 
-// Fatal 打印后直接退出。仅用于启动期不可恢复错误（如 NODE_SEQ 越界、nodeID 撞号）。
-func Fatal(msg string, args ...any) {
-	L().Error(msg, args...)
+// Fatal 打完就退出，只给启动期那种没救的错误用
+func Fatal(msg string, kv ...any) {
+	pkg().Error(msg, kv...)
+	Sync()
 	os.Exit(1)
 }
 
-// Ctx 从 context 中取出 trace_id（若有）并附加。
-func Ctx(ctx context.Context) *slog.Logger {
+// Sync 冲掉缓冲，进程退出前调一次
+func Sync() { _ = L().s.Sync() }
+
+// Ctx 从 context 里取 trace_id 带上
+func Ctx(ctx context.Context) *Logger {
 	if v, ok := ctx.Value(traceKey{}).(string); ok && v != "" {
 		return Trace(v)
 	}
@@ -88,12 +151,12 @@ func Ctx(ctx context.Context) *slog.Logger {
 
 type traceKey struct{}
 
-// WithTrace 把 trace_id 放进 context。
+// WithTrace 把 trace_id 放进 context
 func WithTrace(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceKey{}, traceID)
 }
 
-// TraceFrom 取出 context 中的 trace_id。
+// TraceFrom 从 context 取 trace_id
 func TraceFrom(ctx context.Context) string {
 	v, _ := ctx.Value(traceKey{}).(string)
 	return v

@@ -1,7 +1,6 @@
-// Package leader 实现 etcd 选主，用于「全局唯一逻辑」的主备服务（§2.1 World）。
+// Package leader etcd 选主，给全局唯一逻辑用
 //
-// 与分片认领是同一套机制的退化形式：分片空间只有一个格子。
-// 因此阈值取舍也一致 —— lease 短（秒级），丢租立即停止处理。
+// 和分片认领相同，只是分片空间只有一格
 package leader
 
 import (
@@ -19,23 +18,22 @@ import (
 	"github.com/gamedev/f1/pkg/logx"
 )
 
-// Record 是写入 etcd 的 leader 记录。
+// Record 写入 etcd 的 leader 记录
 type Record struct {
 	Node  string `json:"node"`
 	Epoch int64  `json:"epoch"` // etcd revision，单调递增
 	Since int64  `json:"since"`
 }
 
-// Hooks 是选主回调。
+// Hooks 选主回调
 type Hooks struct {
-	// OnElected 当选后调用：订阅 subject、加载状态、开始服务。
-	// 返回错误会放弃本次当选并重新参选。
+	// OnElected 当选后调用，返回错误就放弃这次当选重新参选
 	OnElected func(ctx context.Context, epoch int64) error
-	// OnResigned 失去领导权时调用：立即停止处理、退订。
+	// OnResigned 失去领导权时调用，要立刻停手退订
 	OnResigned func(reason string)
 }
 
-// Elector 是选主器。
+// Elector 选主器
 type Elector struct {
 	cli    *clientv3.Client
 	cfg    *config.Config
@@ -55,7 +53,7 @@ type Elector struct {
 	once   sync.Once
 }
 
-// New 构造选主器。name 是被选举的角色名，例如 "world"。
+// New 构造选主器，name 是角色名，比如 world
 func New(cli *clientv3.Client, cfg *config.Config, name, nodeID string, hooks Hooks) *Elector {
 	return &Elector{
 		cli:    cli,
@@ -68,7 +66,6 @@ func New(cli *clientv3.Client, cfg *config.Config, name, nodeID string, hooks Ho
 	}
 }
 
-// Start 开始参选。
 func (e *Elector) Start(ctx context.Context) error {
 	cctx, cancel := context.WithCancel(ctx)
 	e.cancel = cancel
@@ -77,14 +74,14 @@ func (e *Elector) Start(ctx context.Context) error {
 	return nil
 }
 
-// IsLeader 报告本实例当前是否是 leader。
+// IsLeader 报告本实例当前是否是 leader
 func (e *Elector) IsLeader() bool {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return e.isLeader
 }
 
-// Epoch 返回当选时的 epoch（etcd revision）。
+// Epoch 返回当选时的 epoch（etcd revision）
 func (e *Elector) Epoch() int64 {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
@@ -111,7 +108,7 @@ func (e *Elector) loop(ctx context.Context) {
 	}
 }
 
-// campaign 尝试当选；当选后阻塞续租直到失去领导权。
+// campaign 参选，选上之后就一直续租，直到丢掉领导权
 func (e *Elector) campaign(ctx context.Context) error {
 	ttl := int64(e.ttl.Seconds())
 	if ttl < 1 {
@@ -168,7 +165,7 @@ func (e *Elector) campaign(ctx context.Context) error {
 	return nil
 }
 
-// waitForVacancy 等待现任 leader 的键消失。
+// waitForVacancy 等现任 leader 的键消失
 func (e *Elector) waitForVacancy(ctx context.Context) error {
 	wctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
@@ -184,7 +181,7 @@ func (e *Elector) waitForVacancy(ctx context.Context) error {
 	return nil
 }
 
-// keepAlive 续租，直到失败或 ctx 结束。
+// keepAlive 续租，直到失败或 ctx 结束
 func (e *Elector) keepAlive(ctx context.Context, id clientv3.LeaseID) {
 	t := time.NewTicker(e.beat)
 	defer t.Stop()
@@ -214,7 +211,7 @@ func (e *Elector) keepAlive(ctx context.Context, id clientv3.LeaseID) {
 	}
 }
 
-// resign 主动让位。
+// resign 主动让位
 func (e *Elector) resign(ctx context.Context, reason string) {
 	e.mu.Lock()
 	if !e.isLeader {
@@ -237,7 +234,7 @@ func (e *Elector) resign(ctx context.Context, reason string) {
 	}
 }
 
-// Stop 停止参选并让位。
+// Stop 停止参选并让位
 func (e *Elector) Stop(ctx context.Context) {
 	e.once.Do(func() {
 		if e.cancel != nil {
@@ -248,7 +245,7 @@ func (e *Elector) Stop(ctx context.Context) {
 	e.wg.Wait()
 }
 
-// Current 查询当前 leader。
+// Current 查现在是谁在当 leader
 func (e *Elector) Current(ctx context.Context) (Record, bool, error) {
 	gctx, cancel := context.WithTimeout(ctx, e.cfg.EtcdTimeout)
 	defer cancel()

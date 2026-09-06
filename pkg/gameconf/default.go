@@ -1,6 +1,6 @@
 package gameconf
 
-// 符号定义。低分符号（牌面）频率高、赔率低；高分符号相反。
+// 符号定义。低分符号（牌面）频率高、赔率低；高分符号相反
 const (
 	SymTen Symbol = iota
 	SymJack
@@ -13,7 +13,7 @@ const (
 	SymScatter
 )
 
-// SymbolName 返回符号名，用于日志与客服排查。
+// SymbolName 返回符号名，用于日志与客服排查
 func SymbolName(s Symbol) string {
 	switch s {
 	case SymTen:
@@ -38,10 +38,9 @@ func SymbolName(s Symbol) string {
 	return "?"
 }
 
-// strip 按 (符号, 个数) 展开成一条轴带。
+// strip 按 (符号, 个数) 展开成一条轴带
 //
-// 轴带的符号构成就是这台机器的概率模型：改一个数字就会移动 RTP，
-// 所以任何改动都必须跑一遍蒙特卡洛回归（见 internal/slots 的 RTP 测试）。
+// 轴带的构成就是这台机器的概率模型，改数字必然挪动 RTP，改完记得跑 RTP 测试
 func strip(pairs ...any) []Symbol {
 	out := make([]Symbol, 0, 32)
 	for i := 0; i < len(pairs); i += 2 {
@@ -54,7 +53,7 @@ func strip(pairs ...any) []Symbol {
 	return out
 }
 
-// classicStrip 是标准轴带：32 格。
+// classicStrip 标准轴带：32 格
 func classicStrip() []Symbol {
 	return strip(
 		SymTen, 6,
@@ -69,10 +68,9 @@ func classicStrip() []Symbol {
 	)
 }
 
-// interleave 把轴带打散，避免相同符号连成一片。
+// interleave 把轴带打散，免得同一符号连成一片
 //
-// 这不改变各符号的出现概率（因此不改变单条线的 RTP），
-// 但会显著改变「近失」（near miss）的视觉观感 —— 这是体验调优项，不是数学项。
+// 不改变各符号出现的概率，所以不影响 RTP，只影响近失的观感
 func interleave(s []Symbol, offset int) []Symbol {
 	out := make([]Symbol, len(s))
 	n := len(s)
@@ -85,10 +83,8 @@ func interleave(s []Symbol, offset int) []Symbol {
 	return out
 }
 
-// Default 返回内置默认配置。
-//
-// 没有配置文件时也能跑起来，这对本地开发和测试很重要；
-// 生产必须用配置文件，因为默认值里的 RTP 与商品价格都只是示例。
+// Default 返回内置默认配置，让本地开发和测试不用先准备配置文件。
+// 生产要用真配置：这里的 RTP 和商品定价都只是示例
 func Default() *Config {
 	base := classicStrip()
 	reels := make([][]Symbol, 5)
@@ -103,7 +99,7 @@ func Default() *Config {
 				Name:  "Classic Five",
 				Rows:  3,
 				Reels: reels,
-				// 10 条标准中奖线。
+				// 10 条标准中奖线
 				Paylines: [][]int{
 					{1, 1, 1, 1, 1},
 					{0, 0, 0, 0, 0},
@@ -116,7 +112,7 @@ func Default() *Config {
 					{1, 2, 1, 0, 1},
 					{0, 1, 1, 1, 2},
 				},
-				// 赔率单位是「线注」的倍数，下标 k 对应连中 k+1 个。
+				// 赔率是线注的倍数，下标 k 对应连中 k+1 个
 				Paytable: map[Symbol][]int64{
 					SymTen:   {0, 0, 8, 24, 82},
 					SymJack:  {0, 0, 8, 24, 82},
@@ -129,12 +125,12 @@ func Default() *Config {
 				},
 				Wild:    SymWild,
 				Scatter: SymScatter,
-				// scatter 赔率单位是「总注」的倍数。
+				// scatter 按总注倍数赔
 				ScatterPays:        []int64{0, 0, 2, 11, 55},
 				FreeSpins:          []uint32{0, 0, 10, 15, 20},
 				FreeSpinMultiplier: 2,
 				FreeSpinRetrigger:  true,
-				// 总注必须能被线数整除，否则线注会产生舍入 —— 钱上不接受舍入。
+				// 总注要能被线数整除，否则线注会有舍入
 				BetLevels:      []int64{10, 20, 50, 100, 200, 500, 1000},
 				Currency:       1, // CurrencyGold
 				TheoreticalRTP: 0.9600,
@@ -194,8 +190,7 @@ func Default() *Config {
 			DailyBetLimit:  1_000_000,
 			DailyLossLimit: 200_000,
 			SessionLimit:   4 * 3600,
-			// 结算日按 UTC+8。必须显式写死：这个值决定「跨日」发生在哪一刻，
-			// 配错等于给了玩家一个绕过日限额的窗口。
+			// 结算日按 UTC+8。这个值决定跨日发生在哪一刻，配错会开出一个绕过日限额的窗口
 			ResetOffsetMinutes: 8 * 60,
 			NoticeInterval:     1800,
 		},
@@ -207,7 +202,7 @@ func Default() *Config {
 	return c
 }
 
-// buildLevelCurve 生成经验曲线。
+// buildLevelCurve 生成经验曲线
 func buildLevelCurve(maxLevel int) []uint64 {
 	out := make([]uint64, maxLevel+1)
 	for lv := 0; lv <= maxLevel; lv++ {

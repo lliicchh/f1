@@ -21,7 +21,7 @@ func limits() gameconf.RGLimits {
 func TestDailyBetLimit(t *testing.T) {
 	cfg := limits()
 	now := time.Now()
-	// 派彩填高一些，让亏损远离限额，从而单独检验投注限额。
+	// 派彩填高点，把亏损拉离限额，单独看投注限额
 	st := &pb.PlayerRG{
 		DayStart: DayStart(now, cfg.ResetOffsetMinutes),
 		DailyBet: 900, DailyWin: 700,
@@ -40,7 +40,7 @@ func TestDailyBetLimit(t *testing.T) {
 func TestDailyLossLimit(t *testing.T) {
 	cfg := limits()
 	now := time.Now()
-	// 投注 800、派彩 400 → 亏损 400，限额 500。
+	// 投注 800、派彩 400 → 亏损 400，限额 500
 	st := &pb.PlayerRG{
 		DayStart: DayStart(now, cfg.ResetOffsetMinutes),
 		DailyBet: 800, DailyWin: 400,
@@ -69,7 +69,7 @@ func TestSessionLimit(t *testing.T) {
 	}
 }
 
-// 自我排除优先级最高，且不能被其他条件绕过。
+// 自我排除优先级最高，且不能被其他条件绕过
 func TestSelfExclusionBlocksEverything(t *testing.T) {
 	cfg := limits()
 	now := time.Now()
@@ -85,17 +85,17 @@ func TestSelfExclusionBlocksEverything(t *testing.T) {
 	if blocked, _ := LoginBlocked(st, now); !blocked {
 		t.Fatal("自我排除期内必须拒绝登录")
 	}
-	// 到期后自动解除。
+	// 到期后自动解除
 	after := time.UnixMilli(st.ExcludedUntil).Add(time.Second)
 	if blocked, _ := LoginBlocked(st, after); blocked {
 		t.Fatal("排除期结束后应允许登录")
 	}
 }
 
-// 跨日重置必须按配置时区发生，而不是服务器本地零点。
+// 跨日重置必须按配置时区发生，而不是服务器本地零点
 func TestRolloverUsesConfiguredTimezone(t *testing.T) {
 	cfg := limits() // UTC+8
-	// UTC+8 的 2026-01-02 00:30，属于「1 月 2 日」这个统计日。
+	// UTC+8 的 2026-01-02 00:30，属于「1 月 2 日」这个统计日
 	loc := time.FixedZone("t", 8*3600)
 	now := time.Date(2026, 1, 2, 0, 30, 0, 0, loc)
 
@@ -112,7 +112,7 @@ func TestRolloverUsesConfiguredTimezone(t *testing.T) {
 	if st.DayStart != DayStart(now, cfg.ResetOffsetMinutes) {
 		t.Fatal("重置后统计日起点不对")
 	}
-	// 同一天内再调用不应重置。
+	// 同一天内再调用不应重置
 	st.DailyBet = 100
 	if Rollover(st, now.Add(time.Hour), cfg) {
 		t.Fatal("同一统计日内不应重复重置")
@@ -122,7 +122,7 @@ func TestRolloverUsesConfiguredTimezone(t *testing.T) {
 	}
 }
 
-// 玩家自设限额只能更严，不能更松 —— 否则「设置限额」就成了解除限额的入口。
+// 玩家自设限额只能更严，不能更松，否则「设置限额」就成了解除限额的入口
 func TestPlayerLimitCanOnlyBeStricter(t *testing.T) {
 	cfg := limits() // 全局 1000
 	now := time.Now()
@@ -144,7 +144,7 @@ func TestPlayerLimitCanOnlyBeStricter(t *testing.T) {
 	}
 }
 
-// 限额为 0 表示不限制（用于不受管辖的场景）。
+// 限额为 0 表示不限制（用于不受管辖的场景）
 func TestZeroLimitMeansUnlimited(t *testing.T) {
 	cfg := gameconf.RGLimits{ResetOffsetMinutes: 0}
 	now := time.Now()
@@ -188,14 +188,14 @@ func TestStatusReportsLimits(t *testing.T) {
 }
 
 func TestDayStartBoundary(t *testing.T) {
-	// UTC+8 的 00:00 与 23:59 应属于不同统计日。
+	// UTC+8 的 00:00 与 23:59 应属于不同统计日
 	loc := time.FixedZone("t", 8*3600)
 	a := time.Date(2026, 3, 1, 23, 59, 59, 0, loc)
 	b := time.Date(2026, 3, 2, 0, 0, 1, 0, loc)
 	if DayStart(a, 8*60) == DayStart(b, 8*60) {
 		t.Fatal("跨过配置时区的零点应属于不同统计日")
 	}
-	// 同一天内的两个时刻应属于同一统计日。
+	// 同一天内的两个时刻应属于同一统计日
 	c := time.Date(2026, 3, 2, 15, 0, 0, 0, loc)
 	if DayStart(b, 8*60) != DayStart(c, 8*60) {
 		t.Fatal("同一统计日内起点应相同")

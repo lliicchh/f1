@@ -1,8 +1,7 @@
-// Package lobby 实现 Lobby 服务：玩家对象的容器 + 玩家业务逻辑（§2.2）。
+// Package lobby 玩家对象的容器，同时跑玩家的业务逻辑
 //
-// 背包、任务、邮件、货币、社交这些模块的数据和逻辑都在这里，
-// 不存在独立的「玩家数据服务」—— 内存态设计的全部价值是
-// 逻辑在数据所在的地方就地执行，函数调用，纳秒级，无锁。
+// 背包、任务、邮件、货币、社交的数据和逻辑都在这儿，没有单独的玩家数据服务。
+// 逻辑跟数据在一起，直接函数调用，不用过网络也不用锁
 package lobby
 
 import (
@@ -16,10 +15,10 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// Player 是常驻内存的玩家对象。
+// Player 常驻内存的玩家对象
 //
-// 它只被所属分片的 Actor goroutine 访问，因此内部没有任何锁：
-// 「同一玩家请求天然串行，不存在并发扣道具类问题」（§4.4）。
+// 只被所属分片的 Actor goroutine 访问，所以没有锁。
+// 同一个玩家的请求天然串行，不会有并发扣道具那类问题
 type Player struct {
 	UID    uint64
 	Base   *pb.PlayerBase
@@ -28,27 +27,27 @@ type Player struct {
 	Social *pb.PlayerSocial
 	Mail   *pb.PlayerMail
 
-	// Round 是未结算的游戏回合。nil 表示当前没有进行中的回合。
-	// 它随投注原子落盘，断线重连后由 §10.1 的懒加载取回（评审 P1-1）。
+	// Round 未结算的回合，nil 表示没有。
+	// 随投注一起落盘，断线重连时靠懒加载取回
 	Round *pb.Round
-	// RG 是责任游戏限额累计（评审 P1-6）。
+	// RG 责任游戏的限额累计
 	RG *pb.PlayerRG
-	// Gacha 是抽卡保底计数（评审 P1-7）。
+	// Gacha 抽卡的保底计数
 	Gacha *pb.PlayerGacha
 
-	// —— 运行态，不落盘 ——
+	// 运行态，不落盘
 	Online     bool
 	GateID     string
 	ConnID     uint64
 	LastActive time.Time
-	OfflineAt  time.Time // 下线时刻，用于 §10.1 的延迟卸载
+	OfflineAt  time.Time // 下线时刻，延迟卸载用
 
-	// busy 为真时该玩家有一次 L0 写穿在途，期间其他改写请求必须排队，
-	// 这样才能兑现「同步落 Redis 成功后才改内存回包」（§6.2）。
+	// busy 表示有一次 L0 写穿在路上。期间其他改写请求得排队，
+	// 这样才能做到落盘成功之后才改内存
 	busy bool
 }
 
-// NewPlayer 创建一个全新玩家（首次登录）。
+// NewPlayer 创建一个全新玩家（首次登录）
 func NewPlayer(uid uint64, now time.Time) *Player {
 	return &Player{
 		UID: uid,
@@ -69,7 +68,7 @@ func NewPlayer(uid uint64, now time.Time) *Player {
 	}
 }
 
-// DefaultBagCapacity 是默认背包格数。
+// DefaultBagCapacity 默认背包格数
 const DefaultBagCapacity = 200
 
 func defaultNick(uid uint64) string {
@@ -89,8 +88,9 @@ func defaultNick(uid uint64) string {
 	return string(append(buf, tmp[i:]...))
 }
 
-// FromBlobs 用 Redis 读回的模块 blob 还原玩家对象。缺失的模块用空值补齐 ——
-// 新玩家、或新增模块的老玩家都会走到这里。
+// FromBlobs 用 Redis 读回的 blob 还原玩家，缺的模块补空值
+//
+// 新玩家和加了新模块的老玩家都会走这条路
 func FromBlobs(uid uint64, blobs map[store.Module][]byte, now time.Time) (*Player, error) {
 	p := NewPlayer(uid, now)
 	if len(blobs) == 0 {
@@ -148,7 +148,7 @@ func FromBlobs(uid uint64, blobs map[store.Module][]byte, now time.Time) (*Playe
 		if err := proto.Unmarshal(b, r); err != nil {
 			return nil, err
 		}
-		// 只有真正未结算的回合才恢复；已结算的留着只会让客户端困惑。
+		// 只恢复真正没结算的，已结算的留着只会让客户端犯迷糊
 		if r.GetRoundId() != 0 && r.GetState() == protocol.RoundOpen {
 			p.Round = r
 		}
@@ -172,9 +172,7 @@ func FromBlobs(uid uint64, blobs map[store.Module][]byte, now time.Time) (*Playe
 	return p, nil
 }
 
-// Marshal 序列化指定模块。
-//
-// 必须在 Actor goroutine 内调用 —— 读内存必须如此（§6.3）。
+// Marshal 序列化指定模块，只能在 Actor goroutine 里调
 func (p *Player) Marshal(m store.Module) ([]byte, error) {
 	switch m {
 	case store.ModBase:
@@ -189,8 +187,8 @@ func (p *Player) Marshal(m store.Module) ([]byte, error) {
 		return proto.Marshal(p.Mail)
 	case store.ModRound:
 		if p.Round == nil {
-			// 回合已结算：写入空串把上一局清掉，
-			// 否则下次加载会把一个陈旧回合当成「未完成」恢复出来。
+			// 回合结算了就写个空串把上一局清掉，
+			// 否则下次加载会把陈旧回合当成未完成的恢复出来
 			return []byte{}, nil
 		}
 		return proto.Marshal(p.Round)
@@ -202,7 +200,7 @@ func (p *Player) Marshal(m store.Module) ([]byte, error) {
 	return nil, nil
 }
 
-// MarshalKeys 把若干模块序列化成 key→value。
+// MarshalKeys 把几个模块序列化成 key→value
 func (p *Player) MarshalKeys(keys *store.Keys, mods []store.Module) (map[string][]byte, error) {
 	out := make(map[string][]byte, len(mods))
 	for _, m := range mods {
@@ -218,13 +216,11 @@ func (p *Player) MarshalKeys(keys *store.Keys, mods []store.Module) (map[string]
 	return out, nil
 }
 
-// Profile 生成只读摘要（§6.5）。
 func (p *Player) Profile() *pb.Profile { return profile.FromBase(p.Base) }
 
-// Currency 返回某种货币余额。
 func (p *Player) Currency(t uint32) int64 { return p.Base.GetCurrency()[t] }
 
-// AddCurrency 增减货币，返回新余额与是否成功。余额不足时不改动任何状态。
+// AddCurrency 增减货币，返回新余额。不够扣就什么都不动
 func (p *Player) AddCurrency(t uint32, delta int64) (int64, bool) {
 	if p.Base.Currency == nil {
 		p.Base.Currency = map[uint32]int64{}
@@ -238,7 +234,7 @@ func (p *Player) AddCurrency(t uint32, delta int64) (int64, bool) {
 	return cur, true
 }
 
-// FindItem 按实例 ID 查找道具。
+// FindItem 按实例 ID 查找道具
 func (p *Player) FindItem(instanceID uint64) (*pb.Item, int) {
 	for i, it := range p.Bag.GetItems() {
 		if it.GetInstanceId() == instanceID {
@@ -248,7 +244,7 @@ func (p *Player) FindItem(instanceID uint64) (*pb.Item, int) {
 	return nil, -1
 }
 
-// CountItem 统计某模板道具的总数。
+// CountItem 统计某模板道具的总数
 func (p *Player) CountItem(tplID uint32) int64 {
 	var n int64
 	for _, it := range p.Bag.GetItems() {
@@ -259,10 +255,9 @@ func (p *Player) CountItem(tplID uint32) int64 {
 	return n
 }
 
-// AddItem 加入道具（可堆叠的合并到已有格子）。instanceID 由雪花生成。
+// AddItem 加道具，可堆叠的合并到已有格子。instanceID 用雪花生成
 //
-// stackable 由配置决定而不是硬编码号段：道具是否可堆叠属于策划数值，
-// 写死在代码里就意味着加一个道具要发一次版。
+// stackable 从配置来而不是写死号段，那是策划数值，写死了加个道具就要发版
 func (p *Player) AddItem(instanceID uint64, tplID uint32, count int64, now time.Time, stackable bool) (*pb.Item, bool) {
 	if count <= 0 {
 		return nil, false
@@ -288,7 +283,7 @@ func (p *Player) AddItem(instanceID uint64, tplID uint32, count int64, now time.
 	return it, true
 }
 
-// RemoveItemByTpl 按模板扣除数量，不足时不改动任何状态并返回 false。
+// RemoveItemByTpl 按模板扣数量，不够就原样不动返回 false
 func (p *Player) RemoveItemByTpl(tplID uint32, count int64) bool {
 	if count <= 0 || p.CountItem(tplID) < count {
 		return false
@@ -311,7 +306,7 @@ func (p *Player) RemoveItemByTpl(tplID uint32, count int64) bool {
 	return true
 }
 
-// UseItem 按实例 ID 消耗道具。
+// UseItem 按实例 ID 消耗道具
 func (p *Player) UseItem(instanceID, count int64) (int64, bool) {
 	it, _ := p.FindItem(uint64(instanceID))
 	if it == nil || it.GetCount() < count || count <= 0 {
@@ -334,7 +329,6 @@ func (p *Player) compactBag() {
 	p.Bag.Items = out
 }
 
-// Quest 查找任务。
 func (p *Player) FindQuest(id uint32) *pb.Quest {
 	for _, q := range p.Quest.GetQuests() {
 		if q.GetQuestId() == id {
@@ -344,7 +338,6 @@ func (p *Player) FindQuest(id uint32) *pb.Quest {
 	return nil
 }
 
-// FindMail 查找邮件。
 func (p *Player) FindMail(id uint64) *pb.Mail {
 	for _, m := range p.Mail.GetMails() {
 		if m.GetMailId() == id {
@@ -354,7 +347,7 @@ func (p *Player) FindMail(id uint64) *pb.Mail {
 	return nil
 }
 
-// HasFriend 报告是否已是好友。
+// HasFriend 报告是否已是好友
 func (p *Player) HasFriend(uid uint64) bool {
 	for _, f := range p.Social.GetFriends() {
 		if f == uid {
@@ -364,7 +357,7 @@ func (p *Player) HasFriend(uid uint64) bool {
 	return false
 }
 
-// Idle 返回下线后经过的时长；仍在线返回 0。
+// Idle 返回下线后过了多久，还在线返回 0
 func (p *Player) Idle(now time.Time) time.Duration {
 	if p.Online || p.OfflineAt.IsZero() {
 		return 0

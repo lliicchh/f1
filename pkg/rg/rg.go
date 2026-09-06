@@ -1,16 +1,9 @@
-// Package rg 实现责任游戏（Responsible Gaming）限额。
+// Package rg 责任游戏限额：会话时长、日投注、日亏损、自我排除
 //
-// 评审 P1-6 的修复。会话时长、单日投注/亏损限额、自我排除 —— 多数司法辖区
-// 把这些列为发牌前置条件，不是「有空再做」的功能。
+// 这里只做纯计算，状态由调用方塞进扣款那一次提交。分开写会出现
+// 「扣了钱没记进当日累计」，限额随即形同虚设。
 //
-// 两个设计要点：
-//
-//	一、限额累计必须与扣款原子推进。分开写就会出现「扣了钱没记进当日累计」，
-//	    限额随即形同虚设，而且是玩家侧不可见、监管侧可查的那种漏洞。
-//	    因此这里只做纯计算，状态的持久化交给调用方塞进同一个 Lua。
-//
-//	二、跨日重置的时刻必须由配置显式决定。用「服务器本地时间的零点」很危险：
-//	    换个部署地域，限额窗口就偏了，玩家可以在错位的窗口里绕过日限额。
+// 跨日重置的时刻由配置的时区决定，不用服务器本地零点：换个部署地域窗口就偏了
 package rg
 
 import (
@@ -21,17 +14,17 @@ import (
 	"github.com/gamedev/f1/pkg/pb"
 )
 
-// Decision 是一次限额检查的结果。
+// Decision 一次限额检查的结果
 type Decision struct {
 	Allowed bool
-	// Code 用于映射到协议错误码。
+	// Code 用于映射到协议错误码
 	Code   Reason
 	Reason string
-	// Notice 非空时表示应给玩家一个提醒（未阻断）。
+	// Notice 非空时表示应给玩家一个提醒（未阻断）
 	Notice string
 }
 
-// Reason 是拒绝原因。
+// Reason 拒绝原因
 type Reason uint8
 
 const (
@@ -42,12 +35,9 @@ const (
 	ReasonSession
 )
 
-// Allow 返回一个放行结果。
 func Allow() Decision { return Decision{Allowed: true} }
 
-// DayStart 返回给定时刻所属「统计日」的起点（毫秒）。
-//
-// offsetMinutes 是结算时区相对 UTC 的偏移。
+// DayStart 返回该时刻所属统计日的起点，offsetMinutes 是结算时区相对 UTC 的偏移
 func DayStart(now time.Time, offsetMinutes int) int64 {
 	loc := time.FixedZone("rg", offsetMinutes*60)
 	t := now.In(loc)
@@ -55,9 +45,8 @@ func DayStart(now time.Time, offsetMinutes int) int64 {
 	return time.Date(y, m, d, 0, 0, 0, 0, loc).UnixMilli()
 }
 
-// Rollover 在跨日时重置当日累计。返回是否发生了重置。
-//
-// 由调用方在每次下注前调用，重置结果随下注一起落盘。
+// Rollover 跨日时清掉当日累计，返回是否真的重置了。
+// 在下注前调用，重置结果随下注一起落盘
 func Rollover(state *pb.PlayerRG, now time.Time, cfg gameconf.RGLimits) bool {
 	start := DayStart(now, cfg.ResetOffsetMinutes)
 	if state.GetDayStart() == start {
@@ -69,10 +58,8 @@ func Rollover(state *pb.PlayerRG, now time.Time, cfg gameconf.RGLimits) bool {
 	return true
 }
 
-// effective 返回生效的限额：玩家自设的更严则用玩家的。
-//
-// 玩家可以把自己的限额调得更严，但不能调得比全局默认更松 ——
-// 否则「设置限额」就成了解除限额的入口。
+// effective 取生效限额：玩家自设的更严就用玩家的。
+// 只能更严，否则「设置限额」就成了解除限额的入口
 func effective(playerLimit, globalLimit int64) int64 {
 	if playerLimit > 0 && (globalLimit <= 0 || playerLimit < globalLimit) {
 		return playerLimit
@@ -80,13 +67,13 @@ func effective(playerLimit, globalLimit int64) int64 {
 	return globalLimit
 }
 
-// CheckBet 在下注前做限额检查。
+// CheckBet 在下注前做限额检查
 func CheckBet(state *pb.PlayerRG, bet int64, now time.Time, cfg gameconf.RGLimits) Decision {
 	if state == nil {
 		return Allow()
 	}
 
-	// 自我排除优先级最高：期间任何投注都必须拒绝。
+	// 自我排除优先级最高
 	if until := state.GetExcludedUntil(); until > 0 && now.UnixMilli() < until {
 		return Decision{
 			Code: ReasonSelfExcluded,
@@ -132,7 +119,7 @@ func CheckBet(state *pb.PlayerRG, bet int64, now time.Time, cfg gameconf.RGLimit
 	return d
 }
 
-// notice 生成非阻断的提醒文案（接近限额、会话时长）。
+// notice 生成不阻断的提醒文案
 func notice(state *pb.PlayerRG, now time.Time, cfg gameconf.RGLimits) string {
 	if cfg.NoticeInterval <= 0 {
 		return ""
@@ -154,7 +141,7 @@ func notice(state *pb.PlayerRG, now time.Time, cfg gameconf.RGLimits) string {
 	return ""
 }
 
-// ApplyBet 累计投注。必须与扣款在同一次提交中落盘。
+// ApplyBet 累计投注，要和扣款在同一次提交里落盘
 func ApplyBet(state *pb.PlayerRG, bet int64) {
 	if state == nil {
 		return
@@ -162,7 +149,6 @@ func ApplyBet(state *pb.PlayerRG, bet int64) {
 	state.DailyBet += bet
 }
 
-// ApplyWin 累计派彩。
 func ApplyWin(state *pb.PlayerRG, win int64) {
 	if state == nil {
 		return
@@ -170,14 +156,14 @@ func ApplyWin(state *pb.PlayerRG, win int64) {
 	state.DailyWin += win
 }
 
-// MarkNotice 记录提醒时间，避免刷屏。
+// MarkNotice 记下提醒时间，免得刷屏
 func MarkNotice(state *pb.PlayerRG, now time.Time) {
 	if state != nil {
 		state.LastNoticeAt = now.UnixMilli()
 	}
 }
 
-// StartSession 在登录时记录会话起点。
+// StartSession 在登录时记录会话起点
 func StartSession(state *pb.PlayerRG, now time.Time) {
 	if state == nil {
 		return
@@ -185,7 +171,7 @@ func StartSession(state *pb.PlayerRG, now time.Time) {
 	state.SessionStart = now.UnixMilli()
 }
 
-// LoginBlocked 报告是否处于自我排除期，登录时检查。
+// LoginBlocked 报告是否在自我排除期内，登录时查
 func LoginBlocked(state *pb.PlayerRG, now time.Time) (bool, int64) {
 	if state == nil {
 		return false, 0
@@ -197,7 +183,7 @@ func LoginBlocked(state *pb.PlayerRG, now time.Time) (bool, int64) {
 	return false, 0
 }
 
-// Status 生成给客户端看的限额状态。
+// Status 生成给客户端看的限额状态
 func Status(state *pb.PlayerRG, now time.Time, cfg gameconf.RGLimits) *pb.RGStatusResp {
 	if state == nil {
 		state = &pb.PlayerRG{}

@@ -36,12 +36,9 @@ func startService(t *testing.T, env *harness.Env, svcName, kind string, seq int,
 	return n
 }
 
-// 全链路：匹配 → 建房 → 开打 → 结算 → 发奖回到 Lobby。
+// 全链路：匹配 → 建房 → 开打 → 结算 → 发奖回到 Lobby
 //
-// 这条路径同时覆盖了：
-//   - 两套独立分片空间（Lobby 按 uid、Room 按 roomID）
-//   - 按 gateID 聚合的定向推送（§9.3）
-//   - 发奖走 JetStream 必达任务（§5.2）
+// 顺带覆盖两套分片空间、按 gateID 聚合的推送，以及走 JetStream 的发奖
 func TestFullStackMatchBattleSettle(t *testing.T) {
 	env := harness.Start(t)
 
@@ -53,7 +50,7 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 	_, _, addr := startGateway(t, env, 1)
 
 	// Room 必须先认领完分片，否则匹配成功后建房会打空；
-	// 匹配桶同理，入队请求发过去得有人接。
+	// 匹配桶同理，入队请求发过去得有人接
 	harness.Eventually(t, 30*time.Second, "Room 与 Match 就绪", func() bool {
 		return len(rsvc.OwnedShards()) == testShards && msvc.OwnsBucket(1, 0)
 	})
@@ -67,10 +64,10 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 	loginVia(t, ca, uidA)
 	loginVia(t, cb, uidB)
 
-	// 记录战前金币。
+	// 记录战前金币
 	beforeA := goldOf(t, lobbyNode, uidA)
 
-	// 两人入队同一模式与段位（mode=1 需要 2 人成队）。
+	// 两人入队同一模式与段位（mode=1 需要 2 人成队）
 	ca.send(protocol.CmdMatchEnqueue, uidA, &pb.MatchEnqueueReq{Uid: uidA, Mode: 1, Tier: 0, Power: 1000})
 	if _, err := ca.recvCmd(uint32(protocol.CmdMatchEnqueue), 10*time.Second); err != nil {
 		t.Fatalf("A 入队失败: %v", err)
@@ -80,7 +77,7 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 		t.Fatalf("B 入队失败: %v", err)
 	}
 
-	// 匹配成功推送。
+	// 匹配成功推送
 	found := waitMatchFound(t, ca, 20*time.Second)
 	if found.GetRoomId() == 0 {
 		t.Fatal("匹配成功推送里应带 room_id")
@@ -89,19 +86,19 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 		t.Fatalf("成队人数 = %d，期望 2", len(found.GetMembers()))
 	}
 
-	// 打一下再结束。
+	// 打一下再结束
 	ca.send(protocol.CmdRoomOp, uidA, &pb.RoomOpReq{RoomId: found.GetRoomId(), Uid: uidA, Op: 1, Payload: []byte("hit")})
 	_, _ = ca.recvCmd(uint32(protocol.CmdRoomOp), 10*time.Second)
 	ca.send(protocol.CmdRoomOp, uidA, &pb.RoomOpReq{RoomId: found.GetRoomId(), Uid: uidA, Op: 2})
 	_, _ = ca.recvCmd(uint32(protocol.CmdRoomOp), 10*time.Second)
 
-	// 发奖经 job.battle.settle → Lobby 中转层 → 各自 owner 分片入账。
+	// 发奖经 job.battle.settle → Lobby 中转层 → 各自 owner 分片入账
 	harness.Eventually(t, 30*time.Second, "战斗奖励到账", func() bool {
 		return goldOf(t, lobbyNode, uidA) > beforeA
 	})
 }
 
-// 世界服选主：只有一个实例会当选并对外服务。
+// 世界服选主：只有一个实例会当选并对外服务
 func TestWorldLeaderElection(t *testing.T) {
 	env := harness.Start(t)
 
@@ -110,7 +107,7 @@ func TestWorldLeaderElection(t *testing.T) {
 	w2 := world.New()
 	startService(t, env, "world", "world", 2, w2, lobbyCfg)
 
-	// 无论谁当选，req.world.* 都应该恰好被服务一次。
+	// 无论谁当选，req.world.* 都应该恰好被服务一次
 	harness.Eventually(t, 20*time.Second, "世界服就绪", func() bool {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -120,7 +117,7 @@ func TestWorldLeaderElection(t *testing.T) {
 		return err == nil && st.GetMaxHp() > 0
 	})
 
-	// 打一刀，血量应减少 —— 说明确实有唯一一个实例在维护状态。
+	// 打一刀，血量应减少，说明确实有唯一一个实例在维护状态
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	var hit pb.WorldBossHitResp
@@ -133,7 +130,7 @@ func TestWorldLeaderElection(t *testing.T) {
 	}
 }
 
-// 聊天中继：世界频道走全服广播，客户端能收到。
+// 聊天中继：世界频道走全服广播，客户端能收到
 func TestChatWorldChannel(t *testing.T) {
 	env := harness.Start(t)
 	_, lsvc := startLobby(t, env, 1)
@@ -153,7 +150,7 @@ func TestChatWorldChannel(t *testing.T) {
 		t.Fatalf("聊天应答失败: %v", err)
 	}
 
-	// 世界频道走 push.broadcast，发送者自己也会收到。
+	// 世界频道走 push.broadcast，发送者自己也会收到
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
 		env, err := c.recv(time.Until(deadline))
@@ -163,7 +160,7 @@ func TestChatWorldChannel(t *testing.T) {
 		if env.GetCmd() != uint32(protocol.PushChat) {
 			continue
 		}
-		// 网关下行时只带 payload 本身，MultiPush 那层聚合是服务端内部用的。
+		// 网关下行时只带 payload 本身，MultiPush 那层聚合是服务端内部用的
 		var msg pb.ChatMsg
 		if proto.Unmarshal(env.GetBody(), &msg) != nil {
 			continue
@@ -188,10 +185,10 @@ func loginVia(t *testing.T, c *client, uid uint64) {
 	}
 }
 
-// goldOf 通过 GM 查询读余额。
+// goldOf 通过 GM 查询读余额
 //
-// 客户端已经没有「查余额」的通用接口了 —— 因为原来那个接口是 add_currency(delta=0)，
-// 而它同时也能加钱。把读和写分开、并把写收回内部，正是评审 P0-1 的修复内容。
+// 客户端已经没有「查余额」的通用接口了。原来那个接口是 add_currency(delta=0)，
+// 同时也能加钱，所以把读和写分开，写收回内部
 func goldOf(t *testing.T, n *node.Node, uid uint64) int64 {
 	t.Helper()
 	sh := shard.Of(uid, n.Cfg.ShardCount)

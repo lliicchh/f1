@@ -2,8 +2,8 @@ package ident
 
 import "testing"
 
-// §3.3：workerID 必须在所有服务之间唯一。
-// 若每个服务都从 1 开始且直接当 workerID，gateway-1 / lobby-1 / room-1 会撞在一起。
+// workerID 必须跨服务唯一。每个服务都从 1 开始，
+// gateway-1、lobby-1、room-1 会撞在一起
 func TestWorkerIDUniqueAcrossServices(t *testing.T) {
 	seen := map[uint32]string{}
 	for _, svc := range []SvcType{SvcGateway, SvcLobby, SvcRoom, SvcMatch, SvcChat, SvcWorld} {
@@ -27,7 +27,7 @@ func TestWorkerIDUniqueAcrossServices(t *testing.T) {
 	}
 }
 
-// §3.3 文档中的具体样例。
+// 几个具体的例子
 func TestWorkerIDExamples(t *testing.T) {
 	cases := []struct {
 		svc    SvcType
@@ -54,8 +54,7 @@ func TestWorkerIDExamples(t *testing.T) {
 	}
 }
 
-// §3.4 第一道：越界校验。
-// nodeSeq >= 128 会溢出到相邻服务的号段，静默产生重复 workerID。
+// 越界校验。nodeSeq 到 128 就会溢出进相邻服务的号段
 func TestNodeSeqBoundsCheck(t *testing.T) {
 	for _, seq := range []int{-1, 0, 128, 129, 1000} {
 		if _, err := New(1, SvcLobby, seq); err == nil {
@@ -69,17 +68,16 @@ func TestNodeSeqBoundsCheck(t *testing.T) {
 	}
 }
 
-// 越界若不拦，序号会溢出进相邻服务的号段，静默产生重复 workerID。
-// 这是 §3.4 第一道校验存在的全部理由，这里把它钉成断言。
+// 不拦就会溢出进相邻服务的号段，静默产生重复 workerID。这里把它钉成断言
 func TestOverflowWouldCollide(t *testing.T) {
 	// lobby 的号段基址是 2<<7=256，room 是 3<<7=384。
-	// nodeSeq=129 的低 7 位是 1，第 8 位溢出加到号段上 → 正好落在 room-1 上。
+	// nodeSeq=129 的低 7 位是 1，第 8 位溢出加到号段上 → 正好落在 room-1 上
 	lobby129 := uint32(SvcLobby)<<NodeSeqBits | 129
 	room1 := uint32(SvcRoom)<<NodeSeqBits | 1
 	if lobby129 != room1 {
 		t.Fatalf("前提失效：lobby-129 (%d) 本应与 room-1 (%d) 相撞", lobby129, room1)
 	}
-	// 而校验会在此之前就拦下它。
+	// 而校验会在此之前就拦下它
 	if _, err := New(1, SvcLobby, 129); err == nil {
 		t.Fatal("NODE_SEQ=129 必须被越界校验拦下")
 	}
@@ -94,8 +92,8 @@ func TestSvcTypeBounds(t *testing.T) {
 	}
 }
 
-// §3.2：serverID 不进 workerID —— 不同区服同序号的进程 workerID 相同，
-// 这是有意为之：uid 只需区服内唯一。
+// serverID 不进 workerID，所以不同区服同序号的进程 workerID 是一样的。
+// 这是故意的：uid 只要区服内唯一
 func TestServerIDNotInWorkerID(t *testing.T) {
 	a, _ := New(1, SvcLobby, 3)
 	b, _ := New(2, SvcLobby, 3)

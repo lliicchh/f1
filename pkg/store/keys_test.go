@@ -2,7 +2,7 @@ package store
 
 import "testing"
 
-// §6.1：hash tag 保证同一玩家所有 key 同 slot，从而支持单玩家 Lua 和 pipeline。
+// hash tag 让同一玩家的 key 落同一个 slot，单玩家的 Lua 和 pipeline 才能用
 func TestUIDHashTagKeepsPlayerKeysTogether(t *testing.T) {
 	k := NewKeys(TagUID, 1024, "lobby")
 	if got := k.Player(1001, ModBase); got != "p:{1001}:base" {
@@ -17,7 +17,7 @@ func TestUIDHashTagKeepsPlayerKeysTogether(t *testing.T) {
 			t.Errorf("模块 %s 的 tag = %q，与 base 的 %q 不一致", m, got, tag)
 		}
 	}
-	// profile 与订单键也必须同 tag：写穿要和玩家数据在同一个 Lua 里。
+	// profile 与订单键也必须同 tag：写穿要和玩家数据在同一个 Lua 里
 	if hashTag(k.Profile(1001)) != tag {
 		t.Error("profile 必须与玩家键同 tag")
 	}
@@ -26,7 +26,7 @@ func TestUIDHashTagKeepsPlayerKeysTogether(t *testing.T) {
 	}
 }
 
-// Cluster 模式：epoch 键必须与该分片下所有玩家键同 slot，否则 fencing 的 Lua 会 CROSSSLOT。
+// Cluster 下 epoch 键要和该分片的玩家键同 slot，否则 fencing 的 Lua 会 CROSSSLOT
 func TestShardHashTagAlignsEpochWithPlayers(t *testing.T) {
 	k := NewKeys(TagShard, 1024, "lobby")
 	uid := uint64(1001)
@@ -44,8 +44,8 @@ func TestShardHashTagAlignsEpochWithPlayers(t *testing.T) {
 	}
 }
 
-// §8：tx 记录、PENDING 索引必须与发起方分片同 slot（写穿要原子）；
-// done 标记必须与接收方分片同 slot（幂等入账要原子）。
+// tx 记录、PENDING 索引必须与发起方分片同 slot（写穿要原子）；
+// done 标记必须与接收方分片同 slot（幂等入账要原子）
 func TestTxKeysColocateWithTheirSide(t *testing.T) {
 	k := NewKeys(TagShard, 1024, "lobby")
 	const from, to = uint32(7), uint32(19)
@@ -82,7 +82,7 @@ func TestShardMapping(t *testing.T) {
 	}
 }
 
-// hashTag 抽取 {} 中的内容；没有大括号则返回整个键。
+// hashTag 抽取 {} 中的内容；没有大括号则返回整个键
 func hashTag(key string) string {
 	start := -1
 	for i := 0; i < len(key); i++ {

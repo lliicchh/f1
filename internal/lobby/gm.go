@@ -15,14 +15,7 @@ import (
 	"github.com/gamedev/f1/pkg/store"
 )
 
-// GM 命令是 LevelGM 级别：既要内部签名，又要带 operator。
-//
-// 「谁在什么时候给谁补了多少」必须能查 —— 补单是最容易出内鬼的地方，
-// 所以每一笔 GM 操作都写进玩家流水，并带上操作者标识。
-
-// handleGMGrant 补单发放。
-//
-// 工单号同时用作幂等键：运营重复点一次「发放」不会发两份。
+// handleGMGrant 补单发放。工单号兼作幂等键，运营手抖点两下不会发两份
 func (s *Shard) handleGMGrant(p *Player, m *bus.Msg) {
 	var req pb.GMGrantReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -30,7 +23,7 @@ func (s *Shard) handleGMGrant(p *Player, m *bus.Msg) {
 		return
 	}
 	if req.GetTicket() == "" {
-		// 没有工单号就没有幂等，也没有审计线索。
+		// 没工单号就既没幂等也没审计线索
 		_ = m.RespondErr(protocol.ErrBadRequest, "GM 发放必须带工单号")
 		return
 	}
@@ -114,7 +107,7 @@ func (s *Shard) handleGMGrant(p *Player, m *bus.Msg) {
 	})
 }
 
-// handleGMQuery 查询玩家状态与最近流水，供客服排查。
+// handleGMQuery 查玩家状态和最近流水，给客服用
 func (s *Shard) handleGMQuery(p *Player, m *bus.Msg) {
 	var req pb.GMQueryReq
 	_ = bus.Unpack(m.Env, &req)
@@ -150,9 +143,9 @@ func (s *Shard) handleGMQuery(p *Player, m *bus.Msg) {
 	}()
 }
 
-// handleGMSetRG 设置责任游戏限额 / 自我排除。
+// handleGMSetRG 设限额或自我排除
 //
-// 自我排除是强约束：设置后连登录都要拦，且不能由玩家自己提前解除。
+// 自我排除设了之后连登录都拦，玩家自己解不掉
 func (s *Shard) handleGMSetRG(p *Player, m *bus.Msg) {
 	var req pb.GMSetRGReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -185,7 +178,7 @@ func (s *Shard) handleGMSetRG(p *Player, m *bus.Msg) {
 	_ = m.Respond(&pb.Ack{Ok: true})
 }
 
-// handleGMKick 强制玩家下线。
+// handleGMKick 把玩家踢下线
 func (s *Shard) handleGMKick(p *Player, m *bus.Msg) {
 	if !p.Online {
 		_ = m.Respond(&pb.Ack{Ok: false})
