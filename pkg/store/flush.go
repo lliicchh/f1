@@ -49,8 +49,13 @@ func ModuleLevel(m Module) Level {
 	switch m {
 	case ModBase, ModBag, ModQuest:
 		return L1
-	case ModSocial, ModMail:
+	case ModSocial, ModMail, ModGacha:
 		return L2
+	case ModRound, ModRG:
+		// 回合与限额是资金相关状态，正常路径上随投注一起走 L0 原子提交，
+		// 不依赖定时刷盘。这里归到 L1 只是兜底：万一有旁路改动了它们，
+		// 也不至于要等一分钟才落盘。
+		return L1
 	default:
 		return L1
 	}
@@ -372,7 +377,7 @@ func (f *Flusher) pipeline(ctx context.Context, b *Batch) ([]*Entity, bool, erro
 func (f *Flusher) ensureScripts(ctx context.Context) error {
 	scripts := []*redis.Script{
 		scriptRaiseEpoch, scriptWriteModules, scriptWriteHash,
-		scriptWriteThrough, scriptDeleteKeys,
+		scriptWriteThrough, scriptDeleteKeys, scriptCommit,
 	}
 	var firstErr error
 	for _, s := range scripts {
@@ -391,7 +396,7 @@ func isNoScript(err error) bool {
 func EnsureScripts(ctx context.Context, rdb redis.UniversalClient) error {
 	for _, s := range []*redis.Script{
 		scriptRaiseEpoch, scriptWriteModules, scriptWriteHash,
-		scriptWriteThrough, scriptDeleteKeys,
+		scriptWriteThrough, scriptDeleteKeys, scriptCommit,
 	} {
 		if err := s.Load(ctx, rdb).Err(); err != nil {
 			return fmt.Errorf("加载 Lua 脚本失败: %w", err)

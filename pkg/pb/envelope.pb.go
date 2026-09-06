@@ -38,7 +38,14 @@ type Envelope struct {
 	ErrCode uint32 `protobuf:"varint,8,opt,name=err_code,json=errCode,proto3" json:"err_code,omitempty"`
 	ErrMsg  string `protobuf:"bytes,9,opt,name=err_msg,json=errMsg,proto3" json:"err_msg,omitempty"`
 	// 目标分片，便于日志与断言（发送方按 uid/roomID 计算后填入）。
-	Shard         uint32 `protobuf:"varint,10,opt,name=shard,proto3" json:"shard,omitempty"`
+	Shard uint32 `protobuf:"varint,10,opt,name=shard,proto3" json:"shard,omitempty"`
+	// 内部命令签名（HMAC-SHA256 截断）。
+	//
+	// Internal / GM 级命令必须携带；接收方用共享密钥校验。
+	// 网关不持有这把密钥，因此即使有人伪造出一条内部命令，也过不了校验。
+	Auth []byte `protobuf:"bytes,11,opt,name=auth,proto3" json:"auth,omitempty"`
+	// 签发 GM 命令的操作者，用于审计（谁补的单）。
+	Operator      string `protobuf:"bytes,12,opt,name=operator,proto3" json:"operator,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -143,6 +150,20 @@ func (x *Envelope) GetShard() uint32 {
 	return 0
 }
 
+func (x *Envelope) GetAuth() []byte {
+	if x != nil {
+		return x.Auth
+	}
+	return nil
+}
+
+func (x *Envelope) GetOperator() string {
+	if x != nil {
+		return x.Operator
+	}
+	return ""
+}
+
 // 通用空体 / 通用确认
 type Empty struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -228,7 +249,7 @@ var File_envelope_proto protoreflect.FileDescriptor
 
 const file_envelope_proto_rawDesc = "" +
 	"\n" +
-	"\x0eenvelope.proto\x12\agame.v1\"\xeb\x01\n" +
+	"\x0eenvelope.proto\x12\agame.v1\"\x9b\x02\n" +
 	"\bEnvelope\x12\x10\n" +
 	"\x03cmd\x18\x01 \x01(\rR\x03cmd\x12\x10\n" +
 	"\x03uid\x18\x02 \x01(\x04R\x03uid\x12\x19\n" +
@@ -240,7 +261,9 @@ const file_envelope_proto_rawDesc = "" +
 	"\berr_code\x18\b \x01(\rR\aerrCode\x12\x17\n" +
 	"\aerr_msg\x18\t \x01(\tR\x06errMsg\x12\x14\n" +
 	"\x05shard\x18\n" +
-	" \x01(\rR\x05shard\"\a\n" +
+	" \x01(\rR\x05shard\x12\x12\n" +
+	"\x04auth\x18\v \x01(\fR\x04auth\x12\x1a\n" +
+	"\boperator\x18\f \x01(\tR\boperator\"\a\n" +
 	"\x05Empty\"\x15\n" +
 	"\x03Ack\x12\x0e\n" +
 	"\x02ok\x18\x01 \x01(\bR\x02okB!Z\x1fgithub.com/gamedev/f1/pkg/pb;pbb\x06proto3"

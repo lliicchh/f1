@@ -13,12 +13,16 @@ import (
 
 	"github.com/gamedev/f1/internal/gateway"
 	"github.com/gamedev/f1/internal/lobby"
+	"github.com/gamedev/f1/pkg/authz"
+	"github.com/gamedev/f1/pkg/bus"
 	"github.com/gamedev/f1/pkg/config"
 	"github.com/gamedev/f1/pkg/node"
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/protocol"
 	"github.com/gamedev/f1/pkg/session"
+	"github.com/gamedev/f1/pkg/shard"
 	"github.com/gamedev/f1/pkg/store"
+	"github.com/gamedev/f1/pkg/subject"
 	"github.com/gamedev/f1/test/harness"
 )
 
@@ -133,7 +137,7 @@ func TestGatewayLoginRoutesToLobby(t *testing.T) {
 	harness.Eventually(t, 20*time.Second, "Lobby 认领分片", func() bool { return lsvc.Owns(uid) })
 
 	c := dial(t, addr)
-	c.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: "t"})
+	c.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 
 	resp, err := c.recvCmd(uint32(protocol.CmdLogin), 10*time.Second)
 	if err != nil {
@@ -162,20 +166,176 @@ func TestGatewayLoginRoutesToLobby(t *testing.T) {
 	}
 
 	// 后续业务请求应被网关按 uid 路由到正确的 Lobby 分片。
-	c.send(protocol.CmdAddCurrency, uid, &pb.AddCurrencyReq{
-		Currency: uint32(protocol.CurrencyGold), Delta: 250,
-	})
-	got, err := c.recvCmd(uint32(protocol.CmdAddCurrency), 10*time.Second)
+	c.send(protocol.CmdGetBag, uid, &pb.GetBagReq{})
+	got, err := c.recvCmd(uint32(protocol.CmdGetBag), 10*time.Second)
 	if err != nil {
-		t.Fatalf("等待加钱应答失败: %v", err)
+		t.Fatalf("等待背包应答失败: %v", err)
 	}
 	if got.GetErrCode() != 0 {
-		t.Fatalf("加钱失败: %s", got.GetErrMsg())
+		t.Fatalf("查询背包失败: %s", got.GetErrMsg())
 	}
-	var cur pb.AddCurrencyResp
-	_ = proto.Unmarshal(got.GetBody(), &cur)
-	if cur.GetBalance() != 250 {
-		t.Fatalf("余额 = %d，期望 250", cur.GetBalance())
+	var bag pb.GetBagResp
+	if err := proto.Unmarshal(got.GetBody(), &bag); err != nil {
+		t.Fatal(err)
+	}
+	if bag.GetBag().GetUid() != uid {
+		t.Fatalf("背包属于 uid=%d，期望 %d", bag.GetBag().GetUid(), uid)
+	}
+}
+
+// 评审 P0-1 的回归测试：客户端绝不能调用内部命令。
+//
+// 这曾经是一个真实存在的送钱漏洞 —— add_currency 在网关白名单里，
+// 处理函数又不校验来源，任何人构造一个请求就能凭空造币。
+func TestClientCannotCallInternalCommands(t *testing.T) {
+	env := harness.Start(t)
+	_, lsvc := startLobby(t, env, 1)
+	_, _, addr := startGateway(t, env, 1)
+
+	const uid = uint64(7100)
+	harness.Eventually(t, 20*time.Second, "Lobby 认领分片", func() bool { return lsvc.Owns(uid) })
+
+	c := dial(t, addr)
+	c.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
+	if resp, err := c.recvCmd(uint32(protocol.CmdLogin), 10*time.Second); err != nil || resp.GetErrCode() != 0 {
+		t.Fatalf("登录失败: %v", err)
+	}
+
+	internal := []struct {
+		cmd  protocol.Cmd
+		body proto.Message
+	}{
+		{protocol.CmdAddCurrency, &pb.AddCurrencyReq{Currency: 2, Delta: 999999999}},
+		{protocol.CmdAddItem, &pb.AddItemReq{TplId: 4001, Count: 100}},
+		{protocol.CmdApplyTransfer, &pb.TransferJob{ToUid: uid}},
+		{protocol.CmdBattleSettle, &pb.BattleResult{RoomId: 1, TargetUid: uid}},
+		{protocol.CmdApplyJackpot, &pb.JackpotClaimReq{PoolId: "grand", Uid: uid, Amount: 1e9, Txid: "x"}},
+		{protocol.CmdGMGrant, &pb.GMGrantReq{Uid: uid, Currency: 2, Amount: 1e9, Ticket: "t"}},
+	}
+
+	for _, tc := range internal {
+		c.send(tc.cmd, uid, tc.body)
+		resp, err := c.recvCmd(uint32(tc.cmd), 10*time.Second)
+		if err != nil {
+			t.Fatalf("命令 %s 应收到拒绝应答: %v", tc.cmd, err)
+		}
+		if resp.GetErrCode() != uint32(protocol.ErrPermission) {
+			t.Fatalf("命令 %s 必须被拒绝，实际 err_code=%d msg=%q",
+				tc.cmd, resp.GetErrCode(), resp.GetErrMsg())
+		}
+	}
+
+	// 确认真的没到账。
+	if gold := goldOf(t, env.Node(t, "lobby", "lobby", 9, lobbyCfg), uid); gold != 0 {
+		t.Fatalf("被拒绝的命令不应产生任何余额变动，实际金币 = %d", gold)
+	}
+}
+
+// 伪造的内部签名必须被识破。
+func TestForgedInternalSignatureRejected(t *testing.T) {
+	env := harness.Start(t)
+	n, lsvc := startLobby(t, env, 1)
+
+	const uid = uint64(7200)
+	harness.Eventually(t, 20*time.Second, "Lobby 认领分片", func() bool { return lsvc.Owns(uid) })
+
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+	e, err := n.Bus.NewEnvelope(protocol.CmdAddCurrency, uid, "", &pb.AddCurrencyReq{
+		Currency: 2, Delta: 1_000_000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 用错误的密钥签名。
+	bad := authz.NewSigner("wrong-secret")
+	if err := bad.Sign(e); err != nil {
+		t.Fatal(err)
+	}
+
+	// 分片刚认领时订阅可能还没起来，重试到拿得到应答为止 ——
+	// 这里要断言的是「签名被拒」，不能被交接窗口的 no-responders 掩盖。
+	var resp *pb.Envelope
+	for attempt := 0; attempt < 20; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		r, err := n.Bus.RequestEnv(ctx, subject.LobbyReq(sh, protocol.CmdAddCurrency.Name()), e)
+		cancel()
+		if err == nil {
+			resp = r
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+		// 重发要刷新时间戳，否则会先撞上防重放的时效检查。
+		e.TsMs = time.Now().UnixMilli()
+		_ = bad.Sign(e)
+	}
+	if resp == nil {
+		t.Fatal("始终没拿到应答")
+	}
+	if resp.GetErrCode() != uint32(protocol.ErrPermission) {
+		t.Fatalf("伪造签名必须被拒绝，实际 err_code=%d msg=%q", resp.GetErrCode(), resp.GetErrMsg())
+	}
+}
+
+// 无签名的内部命令同样必须被拒绝（即便直连内网 NATS）。
+func TestUnsignedInternalCommandRejected(t *testing.T) {
+	env := harness.Start(t)
+	n, lsvc := startLobby(t, env, 1)
+
+	const uid = uint64(7300)
+	harness.Eventually(t, 20*time.Second, "Lobby 认领分片", func() bool { return lsvc.Owns(uid) })
+
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+
+	// 必须明确断言是「无权限」，而不是「没人应答」——
+	// 后者也会返回 error，但那不能证明鉴权起了作用。
+	var remote *bus.RemoteError
+	for attempt := 0; attempt < 20; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := n.Bus.Call(ctx, subject.LobbyReq(sh, protocol.CmdAddCurrency.Name()),
+			protocol.CmdAddCurrency, uid, "", &pb.AddCurrencyReq{Currency: 2, Delta: 500}, nil)
+		cancel()
+		if err == nil {
+			t.Fatal("未签名的内部命令必须被拒绝")
+		}
+		if errors.As(err, &remote) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	if remote == nil {
+		t.Fatal("始终没拿到业务错误应答")
+	}
+	if remote.Code != protocol.ErrPermission {
+		t.Fatalf("应以无权限拒绝，实际 %d(%s)", remote.Code, remote.Msg)
+	}
+}
+
+// 无效登录票据必须被拒绝（评审 P0-3）。
+func TestInvalidLoginTokenRejected(t *testing.T) {
+	env := harness.Start(t)
+	_, _, addr := startGateway(t, env, 1)
+
+	cases := []struct {
+		name  string
+		uid   uint64
+		token string
+	}{
+		{"空票据", 7400, ""},
+		{"乱填", 7400, "garbage"},
+		{"别人的票据", 7400, harness.Token(t, 9999)},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := dial(t, addr)
+			c.send(protocol.CmdLogin, tc.uid, &pb.LoginReq{Uid: tc.uid, Token: tc.token})
+			resp, err := c.recv(5 * time.Second)
+			if err != nil {
+				t.Fatalf("应收到拒绝应答: %v", err)
+			}
+			if resp.GetErrCode() != uint32(protocol.ErrPermission) {
+				t.Fatalf("应拒绝登录，实际 err_code=%d", resp.GetErrCode())
+			}
+		})
 	}
 }
 
@@ -191,14 +351,14 @@ func TestGatewayKickOnDuplicateLogin(t *testing.T) {
 
 	// 第一个设备登录到网关 1。
 	c1 := dial(t, addr1)
-	c1.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid})
+	c1.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 	if resp, err := c1.recvCmd(uint32(protocol.CmdLogin), 10*time.Second); err != nil || resp.GetErrCode() != 0 {
 		t.Fatalf("首次登录失败: %v", err)
 	}
 
 	// 第二个设备登录到网关 2 —— 触发顶号。
 	c2 := dial(t, addr2)
-	c2.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid})
+	c2.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 	if resp, err := c2.recvCmd(uint32(protocol.CmdLogin), 10*time.Second); err != nil || resp.GetErrCode() != 0 {
 		t.Fatalf("第二次登录失败: %v", err)
 	}

@@ -244,6 +244,98 @@ var (
 		Help: "nodeID 撞号导致启动失败的次数",
 	})
 
+	// ---- slots / 运营指标（评审 P1-4、P2-4）----
+
+	// Spins 旋转次数，按游戏与是否免费拆分。
+	Spins = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "slots", Name: "spins_total",
+		Help: "旋转次数",
+	}, []string{"game", "kind"}) // kind: paid / free
+
+	// BetAmount / WinAmount 是 RTP 的两个分子分母，必须实时可查。
+	// RTP 偏离理论值不是体验问题，是配置错误或作弊的第一信号。
+	BetAmount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "slots", Name: "bet_amount_total",
+		Help: "累计投注额（最小货币单位）",
+	}, []string{"game", "config_version"})
+
+	WinAmount = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "slots", Name: "win_amount_total",
+		Help: "累计派彩额（最小货币单位）",
+	}, []string{"game", "config_version"})
+
+	SpinWinRatio = prometheus.NewHistogramVec(prometheus.HistogramOpts{
+		Namespace: ns, Subsystem: "slots", Name: "win_multiple",
+		Help:    "单次旋转派彩相对总注的倍数分布",
+		Buckets: []float64{0, 0.5, 1, 2, 5, 10, 25, 50, 100, 250, 500, 1000},
+	}, []string{"game"})
+
+	RoundsOpen = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Subsystem: "slots", Name: "rounds_open",
+		Help: "当前未结算的回合数（含免费旋转进行中）",
+	})
+
+	RoundRecovered = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "slots", Name: "rounds_recovered_total",
+		Help: "登录时恢复的未结算回合数",
+	})
+
+	JackpotAmount = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Subsystem: "slots", Name: "jackpot_amount",
+		Help: "奖池当前水位",
+	}, []string{"pool"})
+
+	JackpotWins = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "slots", Name: "jackpot_wins_total",
+		Help: "奖池中奖次数",
+	}, []string{"pool"})
+
+	JackpotPending = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Subsystem: "slots", Name: "jackpot_pending",
+		Help: "待派彩的奖池记录数，长期非零说明派彩链路卡住了",
+	}, []string{"pool"})
+
+	// LedgerEntries 流水写入数。它与资金变动次数应当同步增长。
+	LedgerEntries = prometheus.NewCounter(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "ledger", Name: "entries_total",
+		Help: "写入的流水条数",
+	})
+
+	// RGBlocked 责任游戏拦截次数。
+	RGBlocked = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "rg", Name: "blocked_total",
+		Help: "被责任游戏限额拦截的次数",
+	}, []string{"reason"})
+
+	// AuthzRejected 鉴权拒绝次数 —— 非零即需排查（要么有人在试探，要么有服务配错了）。
+	AuthzRejected = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "authz", Name: "rejected_total",
+		Help: "命令鉴权拒绝次数",
+	}, []string{"cmd", "reason"})
+
+	// AuthnFailed 登录认证失败次数。
+	AuthnFailed = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "authn", Name: "failed_total",
+		Help: "登录认证失败次数",
+	}, []string{"reason"})
+
+	// GachaDraws 抽卡次数与保底触发次数。
+	GachaDraws = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "gacha", Name: "draws_total",
+		Help: "抽卡次数",
+	}, []string{"pool"})
+
+	GachaPityHits = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Namespace: ns, Subsystem: "gacha", Name: "pity_hits_total",
+		Help: "保底触发次数",
+	}, []string{"pool", "kind"})
+
+	// ConfigVersion 当前生效的配置版本，用 1 值 gauge 打标，便于回溯某段时间用的是哪版。
+	ConfigVersion = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Namespace: ns, Subsystem: "conf", Name: "active",
+		Help: "当前生效的配置版本",
+	}, []string{"version"})
+
 	SessionKick = prometheus.NewCounter(prometheus.CounterOpts{
 		Namespace: ns, Subsystem: "biz", Name: "session_kick_total",
 		Help: "顶号次数",
@@ -262,6 +354,9 @@ func init() {
 		IDClockBackwards, IDSeqOverflow, IDGenerated, IDHalted,
 		Online, PlayersResident, RoomsResident, TxPending, TxTimeout, TxCompleted,
 		MatchQueueLen, MatchWait, MemAlloc, NodeIDConflict, SessionKick,
+		Spins, BetAmount, WinAmount, SpinWinRatio, RoundsOpen, RoundRecovered,
+		JackpotAmount, JackpotWins, JackpotPending, LedgerEntries,
+		RGBlocked, AuthzRejected, AuthnFailed, GachaDraws, GachaPityHits, ConfigVersion,
 	)
 	registry.MustRegister(prometheus.NewGoCollector())
 	registry.MustRegister(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))

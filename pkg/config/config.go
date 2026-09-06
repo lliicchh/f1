@@ -65,6 +65,30 @@ type Config struct {
 	// ---- 跨分片（§8）----
 	TxScanInterval time.Duration // TX_SCAN_INTERVAL，补偿扫描间隔
 	TxTimeout      time.Duration // TX_TIMEOUT，PENDING 超时重投阈值
+
+	// ---- 安全与合规（评审 P0）----
+
+	// InternalSecret 是内部命令的 HMAC 密钥（INTERNAL_SECRET）。
+	//
+	// **绝不能下发给网关进程**：网关不持有它，就在物理上签不出一条合法的内部命令，
+	// 即使有人绕过网关的白名单，Lobby 侧的签名校验仍然拦得住（评审 P0-1）。
+	InternalSecret string
+	// LoginSecret 是登录票据密钥（LOGIN_SECRET）。仅网关需要。
+	LoginSecret string
+	// AllowDevAuth 显式开启「无密钥放行登录」的开发模式（ALLOW_DEV_AUTH）。
+	// 默认关闭：认证的默认行为必须是拒绝。
+	AllowDevAuth bool
+	// PaymentSecret 是充值回执验签密钥（PAYMENT_SECRET）。
+	PaymentSecret string
+	// PaymentSandbox 显式开启支付沙箱（PAYMENT_SANDBOX）。仅限本地开发。
+	PaymentSandbox bool
+	// GMSecret 是 GM 后台的额外凭证（GM_SECRET），为空时禁用 GM 通道。
+	GMSecret string
+
+	// ---- 游戏配置 ----
+
+	// GameConfPath 是游戏配置表路径（GAME_CONF）。为空则用内置默认配置。
+	GameConfPath string
 }
 
 // Load 读取环境变量并校验。svcName 由各服务 main 硬编码传入。
@@ -172,6 +196,23 @@ func Load(svcName string) (*Config, *ident.Identity, error) {
 	c.TxScanInterval = envDur("TX_SCAN_INTERVAL", 30*time.Second)
 	c.TxTimeout = envDur("TX_TIMEOUT", 60*time.Second)
 
+	c.InternalSecret = envStr("INTERNAL_SECRET", "")
+	c.LoginSecret = envStr("LOGIN_SECRET", "")
+	c.AllowDevAuth = envBool("ALLOW_DEV_AUTH", false)
+	c.PaymentSecret = envStr("PAYMENT_SECRET", "")
+	c.PaymentSandbox = envBool("PAYMENT_SANDBOX", false)
+	c.GMSecret = envStr("GM_SECRET", "")
+	c.GameConfPath = envStr("GAME_CONF", "")
+
+	// 网关不该拿到内部密钥：拿到了，「网关只能发客户端级命令」这道物理隔离就没了。
+	// 这里只告警不阻断 —— 单机 compose 里共用一份 env 文件是常见做法，
+	// 但生产必须分开，因此要让它在日志里刺眼。
+	if svcName == "gateway" && c.InternalSecret != "" {
+		fmt.Fprintln(os.Stderr,
+			"[警告] 网关进程持有 INTERNAL_SECRET：生产环境必须把它从网关的 env 中移除，"+
+				"否则网关被攻破即可签发内部命令（评审 P0-1）")
+	}
+
 	return c, id, nil
 }
 
@@ -209,6 +250,20 @@ func envDur(k string, def time.Duration) time.Duration {
 		return def
 	}
 	return d
+}
+
+func envBool(k string, def bool) bool {
+	v, ok := os.LookupEnv(k)
+	if !ok || v == "" {
+		return def
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	case "0", "false", "no", "off":
+		return false
+	}
+	return def
 }
 
 func envList(k string, def []string) []string {

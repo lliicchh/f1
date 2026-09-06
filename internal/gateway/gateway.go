@@ -11,6 +11,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/gamedev/f1/pkg/authn"
 	"github.com/gamedev/f1/pkg/bus"
 	"github.com/gamedev/f1/pkg/logx"
 	"github.com/gamedev/f1/pkg/metrics"
@@ -28,6 +29,8 @@ type Service struct {
 	gateID   string
 	sessions *session.Store
 	cache    *session.Cache
+	// auth 校验登录票据（评审 P0-3）。
+	auth *authn.Verifier
 
 	ln   net.Listener
 	subs []*nats.Subscription
@@ -73,6 +76,19 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.gateID = n.NodeID()
 	s.sessions = session.NewStore(n.Redis, n.Keys, n.Cfg.SessionTTL)
 	s.cache = session.NewCache(s.sessions, 2*time.Second)
+
+	s.auth = authn.NewVerifier(n.Cfg.LoginSecret, n.Cfg.AllowDevAuth)
+	switch {
+	case s.auth.Enabled():
+		logx.Info("登录票据校验已启用")
+	case s.auth.DevMode():
+		logx.Error("登录认证处于开发模式（告警）：任何 uid 都能直接登录，" +
+			"仅限本地开发；生产必须配置 LOGIN_SECRET")
+	default:
+		// 既没有密钥又没显式开发模式：所有登录都会被拒绝。
+		// 这是有意的默认拒绝 —— 「忘了配密钥」不能变成「谁都能登录」。
+		logx.Error("未配置 LOGIN_SECRET 且未开启 ALLOW_DEV_AUTH：所有登录都会被拒绝")
+	}
 
 	// §9.4：启动时清理自己 gateID 名下所有 session。
 	// 崩溃重启后 Redis 里会残留指向本网关的脏路由，不清会让推送发到黑洞。

@@ -799,6 +799,247 @@ func (x *Profile) GetLastLogin() int64 {
 	return 0
 }
 
+// PlayerRG 是责任游戏（Responsible Gaming）状态，随下注原子更新。
+//
+// 限额是合规要求，必须与扣款在同一个事务里推进 ——
+// 否则「扣了钱但没记进当日累计」会让限额形同虚设。
+type PlayerRG struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Uid            uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	DailyBet       int64                  `protobuf:"varint,2,opt,name=daily_bet,json=dailyBet,proto3" json:"daily_bet,omitempty"`                  // 当日累计投注
+	DailyWin       int64                  `protobuf:"varint,3,opt,name=daily_win,json=dailyWin,proto3" json:"daily_win,omitempty"`                  // 当日累计派彩
+	DayStart       int64                  `protobuf:"varint,4,opt,name=day_start,json=dayStart,proto3" json:"day_start,omitempty"`                  // 当前统计日的起点（按配置时区）
+	DailyBetLimit  int64                  `protobuf:"varint,5,opt,name=daily_bet_limit,json=dailyBetLimit,proto3" json:"daily_bet_limit,omitempty"` // 0 = 用全局默认
+	DailyLossLimit int64                  `protobuf:"varint,6,opt,name=daily_loss_limit,json=dailyLossLimit,proto3" json:"daily_loss_limit,omitempty"`
+	SessionLimit   int64                  `protobuf:"varint,7,opt,name=session_limit,json=sessionLimit,proto3" json:"session_limit,omitempty"`
+	SessionStart   int64                  `protobuf:"varint,8,opt,name=session_start,json=sessionStart,proto3" json:"session_start,omitempty"`
+	ExcludedUntil  int64                  `protobuf:"varint,9,opt,name=excluded_until,json=excludedUntil,proto3" json:"excluded_until,omitempty"` // 自我排除截止时间，期间禁止登录与下注
+	LastNoticeAt   int64                  `protobuf:"varint,10,opt,name=last_notice_at,json=lastNoticeAt,proto3" json:"last_notice_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *PlayerRG) Reset() {
+	*x = PlayerRG{}
+	mi := &file_player_proto_msgTypes[10]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlayerRG) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlayerRG) ProtoMessage() {}
+
+func (x *PlayerRG) ProtoReflect() protoreflect.Message {
+	mi := &file_player_proto_msgTypes[10]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlayerRG.ProtoReflect.Descriptor instead.
+func (*PlayerRG) Descriptor() ([]byte, []int) {
+	return file_player_proto_rawDescGZIP(), []int{10}
+}
+
+func (x *PlayerRG) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetDailyBet() int64 {
+	if x != nil {
+		return x.DailyBet
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetDailyWin() int64 {
+	if x != nil {
+		return x.DailyWin
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetDayStart() int64 {
+	if x != nil {
+		return x.DayStart
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetDailyBetLimit() int64 {
+	if x != nil {
+		return x.DailyBetLimit
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetDailyLossLimit() int64 {
+	if x != nil {
+		return x.DailyLossLimit
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetSessionLimit() int64 {
+	if x != nil {
+		return x.SessionLimit
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetSessionStart() int64 {
+	if x != nil {
+		return x.SessionStart
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetExcludedUntil() int64 {
+	if x != nil {
+		return x.ExcludedUntil
+	}
+	return 0
+}
+
+func (x *PlayerRG) GetLastNoticeAt() int64 {
+	if x != nil {
+		return x.LastNoticeAt
+	}
+	return 0
+}
+
+type GachaPityState struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	SinceTop      uint32                 `protobuf:"varint,2,opt,name=since_top,json=sinceTop,proto3" json:"since_top,omitempty"`    // 距上次出最高稀有度的抽数
+	SinceHigh     uint32                 `protobuf:"varint,3,opt,name=since_high,json=sinceHigh,proto3" json:"since_high,omitempty"` // 距上次出高稀有度的抽数
+	TotalDraws    uint64                 `protobuf:"varint,4,opt,name=total_draws,json=totalDraws,proto3" json:"total_draws,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GachaPityState) Reset() {
+	*x = GachaPityState{}
+	mi := &file_player_proto_msgTypes[11]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GachaPityState) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GachaPityState) ProtoMessage() {}
+
+func (x *GachaPityState) ProtoReflect() protoreflect.Message {
+	mi := &file_player_proto_msgTypes[11]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GachaPityState.ProtoReflect.Descriptor instead.
+func (*GachaPityState) Descriptor() ([]byte, []int) {
+	return file_player_proto_rawDescGZIP(), []int{11}
+}
+
+func (x *GachaPityState) GetPoolId() string {
+	if x != nil {
+		return x.PoolId
+	}
+	return ""
+}
+
+func (x *GachaPityState) GetSinceTop() uint32 {
+	if x != nil {
+		return x.SinceTop
+	}
+	return 0
+}
+
+func (x *GachaPityState) GetSinceHigh() uint32 {
+	if x != nil {
+		return x.SinceHigh
+	}
+	return 0
+}
+
+func (x *GachaPityState) GetTotalDraws() uint64 {
+	if x != nil {
+		return x.TotalDraws
+	}
+	return 0
+}
+
+// PlayerGacha 保存各卡池的保底计数。
+type PlayerGacha struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Pools         []*GachaPityState      `protobuf:"bytes,2,rep,name=pools,proto3" json:"pools,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PlayerGacha) Reset() {
+	*x = PlayerGacha{}
+	mi := &file_player_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PlayerGacha) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PlayerGacha) ProtoMessage() {}
+
+func (x *PlayerGacha) ProtoReflect() protoreflect.Message {
+	mi := &file_player_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PlayerGacha.ProtoReflect.Descriptor instead.
+func (*PlayerGacha) Descriptor() ([]byte, []int) {
+	return file_player_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *PlayerGacha) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *PlayerGacha) GetPools() []*GachaPityState {
+	if x != nil {
+		return x.Pools
+	}
+	return nil
+}
+
 var File_player_proto protoreflect.FileDescriptor
 
 const file_player_proto_rawDesc = "" +
@@ -882,7 +1123,29 @@ const file_player_proto_rawDesc = "" +
 	"\bguild_id\x18\x05 \x01(\x04R\aguildId\x12\x14\n" +
 	"\x05power\x18\x06 \x01(\x04R\x05power\x12\x1d\n" +
 	"\n" +
-	"last_login\x18\a \x01(\x03R\tlastLoginB!Z\x1fgithub.com/gamedev/f1/pkg/pb;pbb\x06proto3"
+	"last_login\x18\a \x01(\x03R\tlastLogin\"\xdc\x02\n" +
+	"\bPlayerRG\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1b\n" +
+	"\tdaily_bet\x18\x02 \x01(\x03R\bdailyBet\x12\x1b\n" +
+	"\tdaily_win\x18\x03 \x01(\x03R\bdailyWin\x12\x1b\n" +
+	"\tday_start\x18\x04 \x01(\x03R\bdayStart\x12&\n" +
+	"\x0fdaily_bet_limit\x18\x05 \x01(\x03R\rdailyBetLimit\x12(\n" +
+	"\x10daily_loss_limit\x18\x06 \x01(\x03R\x0edailyLossLimit\x12#\n" +
+	"\rsession_limit\x18\a \x01(\x03R\fsessionLimit\x12#\n" +
+	"\rsession_start\x18\b \x01(\x03R\fsessionStart\x12%\n" +
+	"\x0eexcluded_until\x18\t \x01(\x03R\rexcludedUntil\x12$\n" +
+	"\x0elast_notice_at\x18\n" +
+	" \x01(\x03R\flastNoticeAt\"\x86\x01\n" +
+	"\x0eGachaPityState\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\tR\x06poolId\x12\x1b\n" +
+	"\tsince_top\x18\x02 \x01(\rR\bsinceTop\x12\x1d\n" +
+	"\n" +
+	"since_high\x18\x03 \x01(\rR\tsinceHigh\x12\x1f\n" +
+	"\vtotal_draws\x18\x04 \x01(\x04R\n" +
+	"totalDraws\"N\n" +
+	"\vPlayerGacha\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12-\n" +
+	"\x05pools\x18\x02 \x03(\v2\x17.game.v1.GachaPityStateR\x05poolsB!Z\x1fgithub.com/gamedev/f1/pkg/pb;pbb\x06proto3"
 
 var (
 	file_player_proto_rawDescOnce sync.Once
@@ -896,33 +1159,37 @@ func file_player_proto_rawDescGZIP() []byte {
 	return file_player_proto_rawDescData
 }
 
-var file_player_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_player_proto_msgTypes = make([]protoimpl.MessageInfo, 15)
 var file_player_proto_goTypes = []any{
-	(*PlayerBase)(nil),   // 0: game.v1.PlayerBase
-	(*Item)(nil),         // 1: game.v1.Item
-	(*PlayerBag)(nil),    // 2: game.v1.PlayerBag
-	(*Quest)(nil),        // 3: game.v1.Quest
-	(*PlayerQuest)(nil),  // 4: game.v1.PlayerQuest
-	(*PlayerSocial)(nil), // 5: game.v1.PlayerSocial
-	(*Mail)(nil),         // 6: game.v1.Mail
-	(*Attachment)(nil),   // 7: game.v1.Attachment
-	(*PlayerMail)(nil),   // 8: game.v1.PlayerMail
-	(*Profile)(nil),      // 9: game.v1.Profile
-	nil,                  // 10: game.v1.PlayerBase.CurrencyEntry
-	nil,                  // 11: game.v1.Item.AttrsEntry
+	(*PlayerBase)(nil),     // 0: game.v1.PlayerBase
+	(*Item)(nil),           // 1: game.v1.Item
+	(*PlayerBag)(nil),      // 2: game.v1.PlayerBag
+	(*Quest)(nil),          // 3: game.v1.Quest
+	(*PlayerQuest)(nil),    // 4: game.v1.PlayerQuest
+	(*PlayerSocial)(nil),   // 5: game.v1.PlayerSocial
+	(*Mail)(nil),           // 6: game.v1.Mail
+	(*Attachment)(nil),     // 7: game.v1.Attachment
+	(*PlayerMail)(nil),     // 8: game.v1.PlayerMail
+	(*Profile)(nil),        // 9: game.v1.Profile
+	(*PlayerRG)(nil),       // 10: game.v1.PlayerRG
+	(*GachaPityState)(nil), // 11: game.v1.GachaPityState
+	(*PlayerGacha)(nil),    // 12: game.v1.PlayerGacha
+	nil,                    // 13: game.v1.PlayerBase.CurrencyEntry
+	nil,                    // 14: game.v1.Item.AttrsEntry
 }
 var file_player_proto_depIdxs = []int32{
-	10, // 0: game.v1.PlayerBase.currency:type_name -> game.v1.PlayerBase.CurrencyEntry
-	11, // 1: game.v1.Item.attrs:type_name -> game.v1.Item.AttrsEntry
+	13, // 0: game.v1.PlayerBase.currency:type_name -> game.v1.PlayerBase.CurrencyEntry
+	14, // 1: game.v1.Item.attrs:type_name -> game.v1.Item.AttrsEntry
 	1,  // 2: game.v1.PlayerBag.items:type_name -> game.v1.Item
 	3,  // 3: game.v1.PlayerQuest.quests:type_name -> game.v1.Quest
 	7,  // 4: game.v1.Mail.attachments:type_name -> game.v1.Attachment
 	6,  // 5: game.v1.PlayerMail.mails:type_name -> game.v1.Mail
-	6,  // [6:6] is the sub-list for method output_type
-	6,  // [6:6] is the sub-list for method input_type
-	6,  // [6:6] is the sub-list for extension type_name
-	6,  // [6:6] is the sub-list for extension extendee
-	0,  // [0:6] is the sub-list for field type_name
+	11, // 6: game.v1.PlayerGacha.pools:type_name -> game.v1.GachaPityState
+	7,  // [7:7] is the sub-list for method output_type
+	7,  // [7:7] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_player_proto_init() }
@@ -936,7 +1203,7 @@ func file_player_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_player_proto_rawDesc), len(file_player_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   15,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

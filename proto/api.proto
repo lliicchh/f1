@@ -20,6 +20,9 @@ message LoginResp {
   PlayerBag  bag    = 2;
   PlayerQuest quest = 3;
   bool   reconnect  = 4;
+  // open_round 非空表示有未结算的回合（例如免费旋转打到一半断线），
+  // 客户端必须先把它打完。这是监管对 incomplete round 的硬性要求。
+  Round  open_round = 5;
 }
 
 message LogoutReq {
@@ -81,11 +84,13 @@ message GetMailResp { PlayerMail mail = 1; }
 message ClaimMailReq { uint64 mail_id = 1; }
 message ClaimMailResp { repeated Item items = 1; }
 
-// L0 写穿：充值 / 开箱，必须幂等（设计文档 §6.2）
+// L0 写穿：充值，必须幂等（设计文档 §6.2）+ 必须验签（评审 P0-2）
 message PurchaseReq {
   string order_id = 1;   // 客户端唯一订单号
   uint32 product  = 2;
-  int64  amount   = 3;
+  reserved 3;            // 原 amount：到账数量只能来自服务端配置，绝不能由客户端指定
+  reserved "amount";
+  PurchaseReceipt receipt = 4;
 }
 message PurchaseResp {
   int64 balance   = 1;
@@ -226,3 +231,178 @@ message WorldBossState {
 }
 message WorldBossHitReq { uint64 uid = 1; int64 damage = 2; }
 message WorldBossHitResp { int64 hp_left = 1; bool killed = 2; }
+
+// ---------------------------------------------------------------------------
+// slots
+// ---------------------------------------------------------------------------
+
+// Round 是一次游戏回合，从下注开始到结算结束。
+//
+// 免费旋转期间回合保持 OPEN；玩家断线重连后必须能取回它继续打完 ——
+// 这既是体验需求，也是 GLI-19 对 incomplete round 的硬性要求。
+message Round {
+  uint64 round_id         = 1;
+  string game_id          = 2;
+  string config_version   = 3;  // 结算时使用的配置版本，事后复算靠它
+  string seed_hex         = 4;  // RNG 种子，复算靠它
+  uint32 currency         = 5;
+  int64  bet              = 6;  // 单次旋转总投注
+  int64  total_win        = 7;  // 本回合累计派彩
+  uint32 spin_index       = 8;  // 已进行的旋转次数（复算时要重放到这一步）
+  uint32 free_spins_left  = 9;
+  uint32 free_spins_total = 10;
+  uint32 multiplier       = 11;
+  uint32 state            = 12; // 0=OPEN 1=SETTLED
+  int64  created_at       = 13;
+  int64  settled_at       = 14;
+}
+
+message SpinReq {
+  string game_id  = 1;
+  int64  bet      = 2;   // 免费旋转时忽略，沿用回合内的下注额
+  uint32 currency = 3;
+  string client_id = 4;  // 客户端幂等号：重发同一次 spin 不得重复扣费
+}
+
+message LineWin {
+  uint32 line    = 1;
+  uint32 symbol  = 2;
+  uint32 count   = 3;
+  int64  payout  = 4;
+}
+
+message SpinResp {
+  Round  round        = 1;
+  repeated uint32 grid = 2;   // 按列展开：reel0 行0..N, reel1 行0..N ...
+  repeated uint32 stops = 3;  // 各轴停止位置，复算校验用
+  repeated LineWin lines = 4;
+  uint32 scatter_count  = 5;
+  int64  spin_win       = 6;  // 本次旋转派彩（含倍数）
+  int64  balance        = 7;
+  uint32 free_spins_awarded = 8;
+  bool   round_finished = 9;
+  int64  jackpot_win    = 10; // 非 0 表示中了奖池
+  bool   duplicate      = 11; // 重发的 spin，返回的是首次结果
+}
+
+message RoundStateReq {}
+message RoundStateResp {
+  Round round    = 1;
+  bool  has_open = 2;
+}
+
+// ---------------------------------------------------------------------------
+// 抽卡
+// ---------------------------------------------------------------------------
+
+message GachaReq {
+  string pool_id  = 1;
+  uint32 times    = 2;  // 1 或 10
+  string client_id = 3;
+}
+
+message GachaDrop {
+  uint32 tpl_id   = 1;
+  uint32 rarity   = 2;
+  int64  count    = 3;
+  bool   by_pity  = 4;  // 是否由保底触发
+}
+
+message GachaResp {
+  repeated GachaDrop drops = 1;
+  uint32 pity_counter = 2;  // 距离下次保底还差多少
+  int64  balance      = 3;
+  bool   duplicate    = 4;
+}
+
+// ---------------------------------------------------------------------------
+// 奖池
+// ---------------------------------------------------------------------------
+
+message JackpotInfoReq { string pool_id = 1; }
+message JackpotInfoResp {
+  string pool_id = 1;
+  int64  amount  = 2;
+  int64  seed    = 3;  // 底注（清零后的起始值）
+}
+
+message JackpotClaimReq {
+  string pool_id  = 1;
+  uint64 uid      = 2;
+  string txid     = 3;
+  int64  amount   = 4;
+  uint64 round_id = 5;
+}
+message JackpotClaimResp {
+  int64  amount = 1;
+  bool   won    = 2;
+}
+
+// ---------------------------------------------------------------------------
+// 责任游戏（Responsible Gaming）
+// ---------------------------------------------------------------------------
+
+message RGStatusReq {}
+message RGStatusResp {
+  int64 daily_bet        = 1;
+  int64 daily_bet_limit  = 2;
+  int64 daily_loss       = 3;
+  int64 daily_loss_limit = 4;
+  int64 session_seconds  = 5;
+  int64 session_limit    = 6;
+  int64 excluded_until   = 7;
+  bool  blocked          = 8;
+  string reason          = 9;
+}
+
+message GMSetRGReq {
+  uint64 uid              = 1;
+  int64  daily_bet_limit  = 2;
+  int64  daily_loss_limit = 3;
+  int64  session_limit    = 4;
+  int64  exclude_until    = 5;
+}
+
+// ---------------------------------------------------------------------------
+// 充值 / GM
+// ---------------------------------------------------------------------------
+
+message PurchaseReceipt {
+  string channel   = 1;  // 支付渠道
+  string receipt   = 2;  // 渠道回执 / 票据
+  string signature = 3;  // 渠道签名
+}
+
+message GMGrantReq {
+  uint64 uid      = 1;
+  uint32 currency = 2;
+  int64  amount   = 3;
+  repeated Attachment items = 4;
+  string reason   = 5;
+  string ticket   = 6;  // 工单号，同时用作幂等键
+}
+
+message GMQueryReq {
+  uint64 uid   = 1;
+  int32  limit = 2;  // 返回最近多少条流水
+}
+
+message LedgerEntry {
+  string entry_id  = 1;
+  uint64 uid       = 2;
+  string type      = 3;
+  uint32 currency  = 4;
+  int64  amount    = 5;  // 正=入账 负=出账
+  int64  balance   = 6;  // 变动后余额
+  uint64 round_id  = 7;
+  string game_id   = 8;
+  string ref       = 9;
+  int64  ts_ms     = 10;
+  string config_version = 11;
+}
+
+message GMQueryResp {
+  PlayerBase base = 1;
+  repeated LedgerEntry entries = 2;
+  Round open_round = 3;
+}

@@ -15,6 +15,8 @@ import (
 	"github.com/gamedev/f1/pkg/node"
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/protocol"
+	"github.com/gamedev/f1/pkg/shard"
+	"github.com/gamedev/f1/pkg/subject"
 	"github.com/gamedev/f1/test/harness"
 )
 
@@ -43,7 +45,7 @@ func startService(t *testing.T, env *harness.Env, svcName, kind string, seq int,
 func TestFullStackMatchBattleSettle(t *testing.T) {
 	env := harness.Start(t)
 
-	_, lsvc := startLobby(t, env, 1)
+	lobbyNode, lsvc := startLobby(t, env, 1)
 	rsvc := room.New()
 	startService(t, env, "room", "room", 1, rsvc, lobbyCfg)
 	msvc := match.New()
@@ -66,7 +68,7 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 	loginVia(t, cb, uidB)
 
 	// 记录战前金币。
-	beforeA := goldOf(t, ca, uidA)
+	beforeA := goldOf(t, lobbyNode, uidA)
 
 	// 两人入队同一模式与段位（mode=1 需要 2 人成队）。
 	ca.send(protocol.CmdMatchEnqueue, uidA, &pb.MatchEnqueueReq{Uid: uidA, Mode: 1, Tier: 0, Power: 1000})
@@ -95,7 +97,7 @@ func TestFullStackMatchBattleSettle(t *testing.T) {
 
 	// 发奖经 job.battle.settle → Lobby 中转层 → 各自 owner 分片入账。
 	harness.Eventually(t, 30*time.Second, "战斗奖励到账", func() bool {
-		return goldOf(t, ca, uidA) > beforeA
+		return goldOf(t, lobbyNode, uidA) > beforeA
 	})
 }
 
@@ -176,7 +178,7 @@ func TestChatWorldChannel(t *testing.T) {
 
 func loginVia(t *testing.T, c *client, uid uint64) {
 	t.Helper()
-	c.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid})
+	c.send(protocol.CmdLogin, uid, &pb.LoginReq{Uid: uid, Token: harness.Token(t, uid)})
 	resp, err := c.recvCmd(uint32(protocol.CmdLogin), 15*time.Second)
 	if err != nil {
 		t.Fatalf("uid=%d 登录失败: %v", uid, err)
@@ -186,18 +188,23 @@ func loginVia(t *testing.T, c *client, uid uint64) {
 	}
 }
 
-func goldOf(t *testing.T, c *client, uid uint64) int64 {
+// goldOf 通过 GM 查询读余额。
+//
+// 客户端已经没有「查余额」的通用接口了 —— 因为原来那个接口是 add_currency(delta=0)，
+// 而它同时也能加钱。把读和写分开、并把写收回内部，正是评审 P0-1 的修复内容。
+func goldOf(t *testing.T, n *node.Node, uid uint64) int64 {
 	t.Helper()
-	c.send(protocol.CmdAddCurrency, uid, &pb.AddCurrencyReq{
-		Currency: uint32(protocol.CurrencyGold), Delta: 0,
-	})
-	resp, err := c.recvCmd(uint32(protocol.CmdAddCurrency), 10*time.Second)
-	if err != nil {
-		t.Fatalf("查询金币失败: %v", err)
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	var resp pb.GMQueryResp
+	if err := harness.InternalCall(ctx, t, n,
+		subject.LobbyReq(sh, protocol.CmdGMQuery.Name()),
+		protocol.CmdGMQuery, uid, "test-op", &pb.GMQueryReq{Uid: uid, Limit: 1}, &resp); err != nil {
+		t.Fatalf("GM 查询失败: %v", err)
 	}
-	var out pb.AddCurrencyResp
-	_ = proto.Unmarshal(resp.GetBody(), &out)
-	return out.GetBalance()
+	return resp.GetBase().GetCurrency()[uint32(protocol.CurrencyGold)]
 }
 
 func waitMatchFound(t *testing.T, c *client, timeout time.Duration) *pb.MatchFound {

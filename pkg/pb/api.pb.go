@@ -90,11 +90,14 @@ func (x *LoginReq) GetConnId() uint64 {
 }
 
 type LoginResp struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Base          *PlayerBase            `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
-	Bag           *PlayerBag             `protobuf:"bytes,2,opt,name=bag,proto3" json:"bag,omitempty"`
-	Quest         *PlayerQuest           `protobuf:"bytes,3,opt,name=quest,proto3" json:"quest,omitempty"`
-	Reconnect     bool                   `protobuf:"varint,4,opt,name=reconnect,proto3" json:"reconnect,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	Base      *PlayerBase            `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
+	Bag       *PlayerBag             `protobuf:"bytes,2,opt,name=bag,proto3" json:"bag,omitempty"`
+	Quest     *PlayerQuest           `protobuf:"bytes,3,opt,name=quest,proto3" json:"quest,omitempty"`
+	Reconnect bool                   `protobuf:"varint,4,opt,name=reconnect,proto3" json:"reconnect,omitempty"`
+	// open_round 非空表示有未结算的回合（例如免费旋转打到一半断线），
+	// 客户端必须先把它打完。这是监管对 incomplete round 的硬性要求。
+	OpenRound     *Round `protobuf:"bytes,5,opt,name=open_round,json=openRound,proto3" json:"open_round,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -155,6 +158,13 @@ func (x *LoginResp) GetReconnect() bool {
 		return x.Reconnect
 	}
 	return false
+}
+
+func (x *LoginResp) GetOpenRound() *Round {
+	if x != nil {
+		return x.OpenRound
+	}
+	return nil
 }
 
 type LogoutReq struct {
@@ -1286,12 +1296,12 @@ func (x *ClaimMailResp) GetItems() []*Item {
 	return nil
 }
 
-// L0 写穿：充值 / 开箱，必须幂等（设计文档 §6.2）
+// L0 写穿：充值，必须幂等（设计文档 §6.2）+ 必须验签（评审 P0-2）
 type PurchaseReq struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	OrderId       string                 `protobuf:"bytes,1,opt,name=order_id,json=orderId,proto3" json:"order_id,omitempty"` // 客户端唯一订单号
 	Product       uint32                 `protobuf:"varint,2,opt,name=product,proto3" json:"product,omitempty"`
-	Amount        int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Receipt       *PurchaseReceipt       `protobuf:"bytes,4,opt,name=receipt,proto3" json:"receipt,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1340,11 +1350,11 @@ func (x *PurchaseReq) GetProduct() uint32 {
 	return 0
 }
 
-func (x *PurchaseReq) GetAmount() int64 {
+func (x *PurchaseReq) GetReceipt() *PurchaseReceipt {
 	if x != nil {
-		return x.Amount
+		return x.Receipt
 	}
-	return 0
+	return nil
 }
 
 type PurchaseResp struct {
@@ -2879,6 +2889,1534 @@ func (x *WorldBossHitResp) GetKilled() bool {
 	return false
 }
 
+// Round 是一次游戏回合，从下注开始到结算结束。
+//
+// 免费旋转期间回合保持 OPEN；玩家断线重连后必须能取回它继续打完 ——
+// 这既是体验需求，也是 GLI-19 对 incomplete round 的硬性要求。
+type Round struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	RoundId        uint64                 `protobuf:"varint,1,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	GameId         string                 `protobuf:"bytes,2,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	ConfigVersion  string                 `protobuf:"bytes,3,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"` // 结算时使用的配置版本，事后复算靠它
+	SeedHex        string                 `protobuf:"bytes,4,opt,name=seed_hex,json=seedHex,proto3" json:"seed_hex,omitempty"`                   // RNG 种子，复算靠它
+	Currency       uint32                 `protobuf:"varint,5,opt,name=currency,proto3" json:"currency,omitempty"`
+	Bet            int64                  `protobuf:"varint,6,opt,name=bet,proto3" json:"bet,omitempty"`                              // 单次旋转总投注
+	TotalWin       int64                  `protobuf:"varint,7,opt,name=total_win,json=totalWin,proto3" json:"total_win,omitempty"`    // 本回合累计派彩
+	SpinIndex      uint32                 `protobuf:"varint,8,opt,name=spin_index,json=spinIndex,proto3" json:"spin_index,omitempty"` // 已进行的旋转次数（复算时要重放到这一步）
+	FreeSpinsLeft  uint32                 `protobuf:"varint,9,opt,name=free_spins_left,json=freeSpinsLeft,proto3" json:"free_spins_left,omitempty"`
+	FreeSpinsTotal uint32                 `protobuf:"varint,10,opt,name=free_spins_total,json=freeSpinsTotal,proto3" json:"free_spins_total,omitempty"`
+	Multiplier     uint32                 `protobuf:"varint,11,opt,name=multiplier,proto3" json:"multiplier,omitempty"`
+	State          uint32                 `protobuf:"varint,12,opt,name=state,proto3" json:"state,omitempty"` // 0=OPEN 1=SETTLED
+	CreatedAt      int64                  `protobuf:"varint,13,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
+	SettledAt      int64                  `protobuf:"varint,14,opt,name=settled_at,json=settledAt,proto3" json:"settled_at,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *Round) Reset() {
+	*x = Round{}
+	mi := &file_api_proto_msgTypes[51]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Round) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Round) ProtoMessage() {}
+
+func (x *Round) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[51]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Round.ProtoReflect.Descriptor instead.
+func (*Round) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{51}
+}
+
+func (x *Round) GetRoundId() uint64 {
+	if x != nil {
+		return x.RoundId
+	}
+	return 0
+}
+
+func (x *Round) GetGameId() string {
+	if x != nil {
+		return x.GameId
+	}
+	return ""
+}
+
+func (x *Round) GetConfigVersion() string {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return ""
+}
+
+func (x *Round) GetSeedHex() string {
+	if x != nil {
+		return x.SeedHex
+	}
+	return ""
+}
+
+func (x *Round) GetCurrency() uint32 {
+	if x != nil {
+		return x.Currency
+	}
+	return 0
+}
+
+func (x *Round) GetBet() int64 {
+	if x != nil {
+		return x.Bet
+	}
+	return 0
+}
+
+func (x *Round) GetTotalWin() int64 {
+	if x != nil {
+		return x.TotalWin
+	}
+	return 0
+}
+
+func (x *Round) GetSpinIndex() uint32 {
+	if x != nil {
+		return x.SpinIndex
+	}
+	return 0
+}
+
+func (x *Round) GetFreeSpinsLeft() uint32 {
+	if x != nil {
+		return x.FreeSpinsLeft
+	}
+	return 0
+}
+
+func (x *Round) GetFreeSpinsTotal() uint32 {
+	if x != nil {
+		return x.FreeSpinsTotal
+	}
+	return 0
+}
+
+func (x *Round) GetMultiplier() uint32 {
+	if x != nil {
+		return x.Multiplier
+	}
+	return 0
+}
+
+func (x *Round) GetState() uint32 {
+	if x != nil {
+		return x.State
+	}
+	return 0
+}
+
+func (x *Round) GetCreatedAt() int64 {
+	if x != nil {
+		return x.CreatedAt
+	}
+	return 0
+}
+
+func (x *Round) GetSettledAt() int64 {
+	if x != nil {
+		return x.SettledAt
+	}
+	return 0
+}
+
+type SpinReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GameId        string                 `protobuf:"bytes,1,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	Bet           int64                  `protobuf:"varint,2,opt,name=bet,proto3" json:"bet,omitempty"` // 免费旋转时忽略，沿用回合内的下注额
+	Currency      uint32                 `protobuf:"varint,3,opt,name=currency,proto3" json:"currency,omitempty"`
+	ClientId      string                 `protobuf:"bytes,4,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"` // 客户端幂等号：重发同一次 spin 不得重复扣费
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *SpinReq) Reset() {
+	*x = SpinReq{}
+	mi := &file_api_proto_msgTypes[52]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SpinReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SpinReq) ProtoMessage() {}
+
+func (x *SpinReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[52]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SpinReq.ProtoReflect.Descriptor instead.
+func (*SpinReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{52}
+}
+
+func (x *SpinReq) GetGameId() string {
+	if x != nil {
+		return x.GameId
+	}
+	return ""
+}
+
+func (x *SpinReq) GetBet() int64 {
+	if x != nil {
+		return x.Bet
+	}
+	return 0
+}
+
+func (x *SpinReq) GetCurrency() uint32 {
+	if x != nil {
+		return x.Currency
+	}
+	return 0
+}
+
+func (x *SpinReq) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+type LineWin struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Line          uint32                 `protobuf:"varint,1,opt,name=line,proto3" json:"line,omitempty"`
+	Symbol        uint32                 `protobuf:"varint,2,opt,name=symbol,proto3" json:"symbol,omitempty"`
+	Count         uint32                 `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	Payout        int64                  `protobuf:"varint,4,opt,name=payout,proto3" json:"payout,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LineWin) Reset() {
+	*x = LineWin{}
+	mi := &file_api_proto_msgTypes[53]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LineWin) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LineWin) ProtoMessage() {}
+
+func (x *LineWin) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[53]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LineWin.ProtoReflect.Descriptor instead.
+func (*LineWin) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{53}
+}
+
+func (x *LineWin) GetLine() uint32 {
+	if x != nil {
+		return x.Line
+	}
+	return 0
+}
+
+func (x *LineWin) GetSymbol() uint32 {
+	if x != nil {
+		return x.Symbol
+	}
+	return 0
+}
+
+func (x *LineWin) GetCount() uint32 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *LineWin) GetPayout() int64 {
+	if x != nil {
+		return x.Payout
+	}
+	return 0
+}
+
+type SpinResp struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Round            *Round                 `protobuf:"bytes,1,opt,name=round,proto3" json:"round,omitempty"`
+	Grid             []uint32               `protobuf:"varint,2,rep,packed,name=grid,proto3" json:"grid,omitempty"`   // 按列展开：reel0 行0..N, reel1 行0..N ...
+	Stops            []uint32               `protobuf:"varint,3,rep,packed,name=stops,proto3" json:"stops,omitempty"` // 各轴停止位置，复算校验用
+	Lines            []*LineWin             `protobuf:"bytes,4,rep,name=lines,proto3" json:"lines,omitempty"`
+	ScatterCount     uint32                 `protobuf:"varint,5,opt,name=scatter_count,json=scatterCount,proto3" json:"scatter_count,omitempty"`
+	SpinWin          int64                  `protobuf:"varint,6,opt,name=spin_win,json=spinWin,proto3" json:"spin_win,omitempty"` // 本次旋转派彩（含倍数）
+	Balance          int64                  `protobuf:"varint,7,opt,name=balance,proto3" json:"balance,omitempty"`
+	FreeSpinsAwarded uint32                 `protobuf:"varint,8,opt,name=free_spins_awarded,json=freeSpinsAwarded,proto3" json:"free_spins_awarded,omitempty"`
+	RoundFinished    bool                   `protobuf:"varint,9,opt,name=round_finished,json=roundFinished,proto3" json:"round_finished,omitempty"`
+	JackpotWin       int64                  `protobuf:"varint,10,opt,name=jackpot_win,json=jackpotWin,proto3" json:"jackpot_win,omitempty"` // 非 0 表示中了奖池
+	Duplicate        bool                   `protobuf:"varint,11,opt,name=duplicate,proto3" json:"duplicate,omitempty"`                     // 重发的 spin，返回的是首次结果
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *SpinResp) Reset() {
+	*x = SpinResp{}
+	mi := &file_api_proto_msgTypes[54]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *SpinResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*SpinResp) ProtoMessage() {}
+
+func (x *SpinResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[54]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use SpinResp.ProtoReflect.Descriptor instead.
+func (*SpinResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{54}
+}
+
+func (x *SpinResp) GetRound() *Round {
+	if x != nil {
+		return x.Round
+	}
+	return nil
+}
+
+func (x *SpinResp) GetGrid() []uint32 {
+	if x != nil {
+		return x.Grid
+	}
+	return nil
+}
+
+func (x *SpinResp) GetStops() []uint32 {
+	if x != nil {
+		return x.Stops
+	}
+	return nil
+}
+
+func (x *SpinResp) GetLines() []*LineWin {
+	if x != nil {
+		return x.Lines
+	}
+	return nil
+}
+
+func (x *SpinResp) GetScatterCount() uint32 {
+	if x != nil {
+		return x.ScatterCount
+	}
+	return 0
+}
+
+func (x *SpinResp) GetSpinWin() int64 {
+	if x != nil {
+		return x.SpinWin
+	}
+	return 0
+}
+
+func (x *SpinResp) GetBalance() int64 {
+	if x != nil {
+		return x.Balance
+	}
+	return 0
+}
+
+func (x *SpinResp) GetFreeSpinsAwarded() uint32 {
+	if x != nil {
+		return x.FreeSpinsAwarded
+	}
+	return 0
+}
+
+func (x *SpinResp) GetRoundFinished() bool {
+	if x != nil {
+		return x.RoundFinished
+	}
+	return false
+}
+
+func (x *SpinResp) GetJackpotWin() int64 {
+	if x != nil {
+		return x.JackpotWin
+	}
+	return 0
+}
+
+func (x *SpinResp) GetDuplicate() bool {
+	if x != nil {
+		return x.Duplicate
+	}
+	return false
+}
+
+type RoundStateReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoundStateReq) Reset() {
+	*x = RoundStateReq{}
+	mi := &file_api_proto_msgTypes[55]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoundStateReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoundStateReq) ProtoMessage() {}
+
+func (x *RoundStateReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[55]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoundStateReq.ProtoReflect.Descriptor instead.
+func (*RoundStateReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{55}
+}
+
+type RoundStateResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Round         *Round                 `protobuf:"bytes,1,opt,name=round,proto3" json:"round,omitempty"`
+	HasOpen       bool                   `protobuf:"varint,2,opt,name=has_open,json=hasOpen,proto3" json:"has_open,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RoundStateResp) Reset() {
+	*x = RoundStateResp{}
+	mi := &file_api_proto_msgTypes[56]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RoundStateResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RoundStateResp) ProtoMessage() {}
+
+func (x *RoundStateResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[56]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RoundStateResp.ProtoReflect.Descriptor instead.
+func (*RoundStateResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{56}
+}
+
+func (x *RoundStateResp) GetRound() *Round {
+	if x != nil {
+		return x.Round
+	}
+	return nil
+}
+
+func (x *RoundStateResp) GetHasOpen() bool {
+	if x != nil {
+		return x.HasOpen
+	}
+	return false
+}
+
+type GachaReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	Times         uint32                 `protobuf:"varint,2,opt,name=times,proto3" json:"times,omitempty"` // 1 或 10
+	ClientId      string                 `protobuf:"bytes,3,opt,name=client_id,json=clientId,proto3" json:"client_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GachaReq) Reset() {
+	*x = GachaReq{}
+	mi := &file_api_proto_msgTypes[57]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GachaReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GachaReq) ProtoMessage() {}
+
+func (x *GachaReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[57]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GachaReq.ProtoReflect.Descriptor instead.
+func (*GachaReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{57}
+}
+
+func (x *GachaReq) GetPoolId() string {
+	if x != nil {
+		return x.PoolId
+	}
+	return ""
+}
+
+func (x *GachaReq) GetTimes() uint32 {
+	if x != nil {
+		return x.Times
+	}
+	return 0
+}
+
+func (x *GachaReq) GetClientId() string {
+	if x != nil {
+		return x.ClientId
+	}
+	return ""
+}
+
+type GachaDrop struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	TplId         uint32                 `protobuf:"varint,1,opt,name=tpl_id,json=tplId,proto3" json:"tpl_id,omitempty"`
+	Rarity        uint32                 `protobuf:"varint,2,opt,name=rarity,proto3" json:"rarity,omitempty"`
+	Count         int64                  `protobuf:"varint,3,opt,name=count,proto3" json:"count,omitempty"`
+	ByPity        bool                   `protobuf:"varint,4,opt,name=by_pity,json=byPity,proto3" json:"by_pity,omitempty"` // 是否由保底触发
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GachaDrop) Reset() {
+	*x = GachaDrop{}
+	mi := &file_api_proto_msgTypes[58]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GachaDrop) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GachaDrop) ProtoMessage() {}
+
+func (x *GachaDrop) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[58]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GachaDrop.ProtoReflect.Descriptor instead.
+func (*GachaDrop) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{58}
+}
+
+func (x *GachaDrop) GetTplId() uint32 {
+	if x != nil {
+		return x.TplId
+	}
+	return 0
+}
+
+func (x *GachaDrop) GetRarity() uint32 {
+	if x != nil {
+		return x.Rarity
+	}
+	return 0
+}
+
+func (x *GachaDrop) GetCount() int64 {
+	if x != nil {
+		return x.Count
+	}
+	return 0
+}
+
+func (x *GachaDrop) GetByPity() bool {
+	if x != nil {
+		return x.ByPity
+	}
+	return false
+}
+
+type GachaResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Drops         []*GachaDrop           `protobuf:"bytes,1,rep,name=drops,proto3" json:"drops,omitempty"`
+	PityCounter   uint32                 `protobuf:"varint,2,opt,name=pity_counter,json=pityCounter,proto3" json:"pity_counter,omitempty"` // 距离下次保底还差多少
+	Balance       int64                  `protobuf:"varint,3,opt,name=balance,proto3" json:"balance,omitempty"`
+	Duplicate     bool                   `protobuf:"varint,4,opt,name=duplicate,proto3" json:"duplicate,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GachaResp) Reset() {
+	*x = GachaResp{}
+	mi := &file_api_proto_msgTypes[59]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GachaResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GachaResp) ProtoMessage() {}
+
+func (x *GachaResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[59]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GachaResp.ProtoReflect.Descriptor instead.
+func (*GachaResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{59}
+}
+
+func (x *GachaResp) GetDrops() []*GachaDrop {
+	if x != nil {
+		return x.Drops
+	}
+	return nil
+}
+
+func (x *GachaResp) GetPityCounter() uint32 {
+	if x != nil {
+		return x.PityCounter
+	}
+	return 0
+}
+
+func (x *GachaResp) GetBalance() int64 {
+	if x != nil {
+		return x.Balance
+	}
+	return 0
+}
+
+func (x *GachaResp) GetDuplicate() bool {
+	if x != nil {
+		return x.Duplicate
+	}
+	return false
+}
+
+type JackpotInfoReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JackpotInfoReq) Reset() {
+	*x = JackpotInfoReq{}
+	mi := &file_api_proto_msgTypes[60]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JackpotInfoReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JackpotInfoReq) ProtoMessage() {}
+
+func (x *JackpotInfoReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[60]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JackpotInfoReq.ProtoReflect.Descriptor instead.
+func (*JackpotInfoReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{60}
+}
+
+func (x *JackpotInfoReq) GetPoolId() string {
+	if x != nil {
+		return x.PoolId
+	}
+	return ""
+}
+
+type JackpotInfoResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	Amount        int64                  `protobuf:"varint,2,opt,name=amount,proto3" json:"amount,omitempty"`
+	Seed          int64                  `protobuf:"varint,3,opt,name=seed,proto3" json:"seed,omitempty"` // 底注（清零后的起始值）
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JackpotInfoResp) Reset() {
+	*x = JackpotInfoResp{}
+	mi := &file_api_proto_msgTypes[61]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JackpotInfoResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JackpotInfoResp) ProtoMessage() {}
+
+func (x *JackpotInfoResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[61]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JackpotInfoResp.ProtoReflect.Descriptor instead.
+func (*JackpotInfoResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{61}
+}
+
+func (x *JackpotInfoResp) GetPoolId() string {
+	if x != nil {
+		return x.PoolId
+	}
+	return ""
+}
+
+func (x *JackpotInfoResp) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *JackpotInfoResp) GetSeed() int64 {
+	if x != nil {
+		return x.Seed
+	}
+	return 0
+}
+
+type JackpotClaimReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	PoolId        string                 `protobuf:"bytes,1,opt,name=pool_id,json=poolId,proto3" json:"pool_id,omitempty"`
+	Uid           uint64                 `protobuf:"varint,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	Txid          string                 `protobuf:"bytes,3,opt,name=txid,proto3" json:"txid,omitempty"`
+	Amount        int64                  `protobuf:"varint,4,opt,name=amount,proto3" json:"amount,omitempty"`
+	RoundId       uint64                 `protobuf:"varint,5,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JackpotClaimReq) Reset() {
+	*x = JackpotClaimReq{}
+	mi := &file_api_proto_msgTypes[62]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JackpotClaimReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JackpotClaimReq) ProtoMessage() {}
+
+func (x *JackpotClaimReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[62]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JackpotClaimReq.ProtoReflect.Descriptor instead.
+func (*JackpotClaimReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{62}
+}
+
+func (x *JackpotClaimReq) GetPoolId() string {
+	if x != nil {
+		return x.PoolId
+	}
+	return ""
+}
+
+func (x *JackpotClaimReq) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *JackpotClaimReq) GetTxid() string {
+	if x != nil {
+		return x.Txid
+	}
+	return ""
+}
+
+func (x *JackpotClaimReq) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *JackpotClaimReq) GetRoundId() uint64 {
+	if x != nil {
+		return x.RoundId
+	}
+	return 0
+}
+
+type JackpotClaimResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Amount        int64                  `protobuf:"varint,1,opt,name=amount,proto3" json:"amount,omitempty"`
+	Won           bool                   `protobuf:"varint,2,opt,name=won,proto3" json:"won,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *JackpotClaimResp) Reset() {
+	*x = JackpotClaimResp{}
+	mi := &file_api_proto_msgTypes[63]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *JackpotClaimResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*JackpotClaimResp) ProtoMessage() {}
+
+func (x *JackpotClaimResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[63]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use JackpotClaimResp.ProtoReflect.Descriptor instead.
+func (*JackpotClaimResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{63}
+}
+
+func (x *JackpotClaimResp) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *JackpotClaimResp) GetWon() bool {
+	if x != nil {
+		return x.Won
+	}
+	return false
+}
+
+type RGStatusReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RGStatusReq) Reset() {
+	*x = RGStatusReq{}
+	mi := &file_api_proto_msgTypes[64]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RGStatusReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RGStatusReq) ProtoMessage() {}
+
+func (x *RGStatusReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[64]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RGStatusReq.ProtoReflect.Descriptor instead.
+func (*RGStatusReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{64}
+}
+
+type RGStatusResp struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	DailyBet       int64                  `protobuf:"varint,1,opt,name=daily_bet,json=dailyBet,proto3" json:"daily_bet,omitempty"`
+	DailyBetLimit  int64                  `protobuf:"varint,2,opt,name=daily_bet_limit,json=dailyBetLimit,proto3" json:"daily_bet_limit,omitempty"`
+	DailyLoss      int64                  `protobuf:"varint,3,opt,name=daily_loss,json=dailyLoss,proto3" json:"daily_loss,omitempty"`
+	DailyLossLimit int64                  `protobuf:"varint,4,opt,name=daily_loss_limit,json=dailyLossLimit,proto3" json:"daily_loss_limit,omitempty"`
+	SessionSeconds int64                  `protobuf:"varint,5,opt,name=session_seconds,json=sessionSeconds,proto3" json:"session_seconds,omitempty"`
+	SessionLimit   int64                  `protobuf:"varint,6,opt,name=session_limit,json=sessionLimit,proto3" json:"session_limit,omitempty"`
+	ExcludedUntil  int64                  `protobuf:"varint,7,opt,name=excluded_until,json=excludedUntil,proto3" json:"excluded_until,omitempty"`
+	Blocked        bool                   `protobuf:"varint,8,opt,name=blocked,proto3" json:"blocked,omitempty"`
+	Reason         string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *RGStatusResp) Reset() {
+	*x = RGStatusResp{}
+	mi := &file_api_proto_msgTypes[65]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RGStatusResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RGStatusResp) ProtoMessage() {}
+
+func (x *RGStatusResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[65]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RGStatusResp.ProtoReflect.Descriptor instead.
+func (*RGStatusResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{65}
+}
+
+func (x *RGStatusResp) GetDailyBet() int64 {
+	if x != nil {
+		return x.DailyBet
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetDailyBetLimit() int64 {
+	if x != nil {
+		return x.DailyBetLimit
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetDailyLoss() int64 {
+	if x != nil {
+		return x.DailyLoss
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetDailyLossLimit() int64 {
+	if x != nil {
+		return x.DailyLossLimit
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetSessionSeconds() int64 {
+	if x != nil {
+		return x.SessionSeconds
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetSessionLimit() int64 {
+	if x != nil {
+		return x.SessionLimit
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetExcludedUntil() int64 {
+	if x != nil {
+		return x.ExcludedUntil
+	}
+	return 0
+}
+
+func (x *RGStatusResp) GetBlocked() bool {
+	if x != nil {
+		return x.Blocked
+	}
+	return false
+}
+
+func (x *RGStatusResp) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type GMSetRGReq struct {
+	state          protoimpl.MessageState `protogen:"open.v1"`
+	Uid            uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	DailyBetLimit  int64                  `protobuf:"varint,2,opt,name=daily_bet_limit,json=dailyBetLimit,proto3" json:"daily_bet_limit,omitempty"`
+	DailyLossLimit int64                  `protobuf:"varint,3,opt,name=daily_loss_limit,json=dailyLossLimit,proto3" json:"daily_loss_limit,omitempty"`
+	SessionLimit   int64                  `protobuf:"varint,4,opt,name=session_limit,json=sessionLimit,proto3" json:"session_limit,omitempty"`
+	ExcludeUntil   int64                  `protobuf:"varint,5,opt,name=exclude_until,json=excludeUntil,proto3" json:"exclude_until,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
+}
+
+func (x *GMSetRGReq) Reset() {
+	*x = GMSetRGReq{}
+	mi := &file_api_proto_msgTypes[66]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GMSetRGReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GMSetRGReq) ProtoMessage() {}
+
+func (x *GMSetRGReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[66]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GMSetRGReq.ProtoReflect.Descriptor instead.
+func (*GMSetRGReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{66}
+}
+
+func (x *GMSetRGReq) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *GMSetRGReq) GetDailyBetLimit() int64 {
+	if x != nil {
+		return x.DailyBetLimit
+	}
+	return 0
+}
+
+func (x *GMSetRGReq) GetDailyLossLimit() int64 {
+	if x != nil {
+		return x.DailyLossLimit
+	}
+	return 0
+}
+
+func (x *GMSetRGReq) GetSessionLimit() int64 {
+	if x != nil {
+		return x.SessionLimit
+	}
+	return 0
+}
+
+func (x *GMSetRGReq) GetExcludeUntil() int64 {
+	if x != nil {
+		return x.ExcludeUntil
+	}
+	return 0
+}
+
+type PurchaseReceipt struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Channel       string                 `protobuf:"bytes,1,opt,name=channel,proto3" json:"channel,omitempty"`     // 支付渠道
+	Receipt       string                 `protobuf:"bytes,2,opt,name=receipt,proto3" json:"receipt,omitempty"`     // 渠道回执 / 票据
+	Signature     string                 `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"` // 渠道签名
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PurchaseReceipt) Reset() {
+	*x = PurchaseReceipt{}
+	mi := &file_api_proto_msgTypes[67]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PurchaseReceipt) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PurchaseReceipt) ProtoMessage() {}
+
+func (x *PurchaseReceipt) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[67]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PurchaseReceipt.ProtoReflect.Descriptor instead.
+func (*PurchaseReceipt) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{67}
+}
+
+func (x *PurchaseReceipt) GetChannel() string {
+	if x != nil {
+		return x.Channel
+	}
+	return ""
+}
+
+func (x *PurchaseReceipt) GetReceipt() string {
+	if x != nil {
+		return x.Receipt
+	}
+	return ""
+}
+
+func (x *PurchaseReceipt) GetSignature() string {
+	if x != nil {
+		return x.Signature
+	}
+	return ""
+}
+
+type GMGrantReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Currency      uint32                 `protobuf:"varint,2,opt,name=currency,proto3" json:"currency,omitempty"`
+	Amount        int64                  `protobuf:"varint,3,opt,name=amount,proto3" json:"amount,omitempty"`
+	Items         []*Attachment          `protobuf:"bytes,4,rep,name=items,proto3" json:"items,omitempty"`
+	Reason        string                 `protobuf:"bytes,5,opt,name=reason,proto3" json:"reason,omitempty"`
+	Ticket        string                 `protobuf:"bytes,6,opt,name=ticket,proto3" json:"ticket,omitempty"` // 工单号，同时用作幂等键
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GMGrantReq) Reset() {
+	*x = GMGrantReq{}
+	mi := &file_api_proto_msgTypes[68]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GMGrantReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GMGrantReq) ProtoMessage() {}
+
+func (x *GMGrantReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[68]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GMGrantReq.ProtoReflect.Descriptor instead.
+func (*GMGrantReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{68}
+}
+
+func (x *GMGrantReq) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *GMGrantReq) GetCurrency() uint32 {
+	if x != nil {
+		return x.Currency
+	}
+	return 0
+}
+
+func (x *GMGrantReq) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *GMGrantReq) GetItems() []*Attachment {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *GMGrantReq) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *GMGrantReq) GetTicket() string {
+	if x != nil {
+		return x.Ticket
+	}
+	return ""
+}
+
+type GMQueryReq struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Uid           uint64                 `protobuf:"varint,1,opt,name=uid,proto3" json:"uid,omitempty"`
+	Limit         int32                  `protobuf:"varint,2,opt,name=limit,proto3" json:"limit,omitempty"` // 返回最近多少条流水
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GMQueryReq) Reset() {
+	*x = GMQueryReq{}
+	mi := &file_api_proto_msgTypes[69]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GMQueryReq) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GMQueryReq) ProtoMessage() {}
+
+func (x *GMQueryReq) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[69]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GMQueryReq.ProtoReflect.Descriptor instead.
+func (*GMQueryReq) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{69}
+}
+
+func (x *GMQueryReq) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *GMQueryReq) GetLimit() int32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+type LedgerEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EntryId       string                 `protobuf:"bytes,1,opt,name=entry_id,json=entryId,proto3" json:"entry_id,omitempty"`
+	Uid           uint64                 `protobuf:"varint,2,opt,name=uid,proto3" json:"uid,omitempty"`
+	Type          string                 `protobuf:"bytes,3,opt,name=type,proto3" json:"type,omitempty"`
+	Currency      uint32                 `protobuf:"varint,4,opt,name=currency,proto3" json:"currency,omitempty"`
+	Amount        int64                  `protobuf:"varint,5,opt,name=amount,proto3" json:"amount,omitempty"`   // 正=入账 负=出账
+	Balance       int64                  `protobuf:"varint,6,opt,name=balance,proto3" json:"balance,omitempty"` // 变动后余额
+	RoundId       uint64                 `protobuf:"varint,7,opt,name=round_id,json=roundId,proto3" json:"round_id,omitempty"`
+	GameId        string                 `protobuf:"bytes,8,opt,name=game_id,json=gameId,proto3" json:"game_id,omitempty"`
+	Ref           string                 `protobuf:"bytes,9,opt,name=ref,proto3" json:"ref,omitempty"`
+	TsMs          int64                  `protobuf:"varint,10,opt,name=ts_ms,json=tsMs,proto3" json:"ts_ms,omitempty"`
+	ConfigVersion string                 `protobuf:"bytes,11,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LedgerEntry) Reset() {
+	*x = LedgerEntry{}
+	mi := &file_api_proto_msgTypes[70]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LedgerEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LedgerEntry) ProtoMessage() {}
+
+func (x *LedgerEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[70]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LedgerEntry.ProtoReflect.Descriptor instead.
+func (*LedgerEntry) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{70}
+}
+
+func (x *LedgerEntry) GetEntryId() string {
+	if x != nil {
+		return x.EntryId
+	}
+	return ""
+}
+
+func (x *LedgerEntry) GetUid() uint64 {
+	if x != nil {
+		return x.Uid
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *LedgerEntry) GetCurrency() uint32 {
+	if x != nil {
+		return x.Currency
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetAmount() int64 {
+	if x != nil {
+		return x.Amount
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetBalance() int64 {
+	if x != nil {
+		return x.Balance
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetRoundId() uint64 {
+	if x != nil {
+		return x.RoundId
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetGameId() string {
+	if x != nil {
+		return x.GameId
+	}
+	return ""
+}
+
+func (x *LedgerEntry) GetRef() string {
+	if x != nil {
+		return x.Ref
+	}
+	return ""
+}
+
+func (x *LedgerEntry) GetTsMs() int64 {
+	if x != nil {
+		return x.TsMs
+	}
+	return 0
+}
+
+func (x *LedgerEntry) GetConfigVersion() string {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return ""
+}
+
+type GMQueryResp struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Base          *PlayerBase            `protobuf:"bytes,1,opt,name=base,proto3" json:"base,omitempty"`
+	Entries       []*LedgerEntry         `protobuf:"bytes,2,rep,name=entries,proto3" json:"entries,omitempty"`
+	OpenRound     *Round                 `protobuf:"bytes,3,opt,name=open_round,json=openRound,proto3" json:"open_round,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GMQueryResp) Reset() {
+	*x = GMQueryResp{}
+	mi := &file_api_proto_msgTypes[71]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GMQueryResp) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GMQueryResp) ProtoMessage() {}
+
+func (x *GMQueryResp) ProtoReflect() protoreflect.Message {
+	mi := &file_api_proto_msgTypes[71]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GMQueryResp.ProtoReflect.Descriptor instead.
+func (*GMQueryResp) Descriptor() ([]byte, []int) {
+	return file_api_proto_rawDescGZIP(), []int{71}
+}
+
+func (x *GMQueryResp) GetBase() *PlayerBase {
+	if x != nil {
+		return x.Base
+	}
+	return nil
+}
+
+func (x *GMQueryResp) GetEntries() []*LedgerEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *GMQueryResp) GetOpenRound() *Round {
+	if x != nil {
+		return x.OpenRound
+	}
+	return nil
+}
+
 var File_api_proto protoreflect.FileDescriptor
 
 const file_api_proto_rawDesc = "" +
@@ -2888,12 +4426,14 @@ const file_api_proto_rawDesc = "" +
 	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
 	"\x05token\x18\x02 \x01(\tR\x05token\x12\x17\n" +
 	"\agate_id\x18\x03 \x01(\tR\x06gateId\x12\x17\n" +
-	"\aconn_id\x18\x04 \x01(\x04R\x06connId\"\xa4\x01\n" +
+	"\aconn_id\x18\x04 \x01(\x04R\x06connId\"\xd3\x01\n" +
 	"\tLoginResp\x12'\n" +
 	"\x04base\x18\x01 \x01(\v2\x13.game.v1.PlayerBaseR\x04base\x12$\n" +
 	"\x03bag\x18\x02 \x01(\v2\x12.game.v1.PlayerBagR\x03bag\x12*\n" +
 	"\x05quest\x18\x03 \x01(\v2\x14.game.v1.PlayerQuestR\x05quest\x12\x1c\n" +
-	"\treconnect\x18\x04 \x01(\bR\treconnect\"g\n" +
+	"\treconnect\x18\x04 \x01(\bR\treconnect\x12-\n" +
+	"\n" +
+	"open_round\x18\x05 \x01(\v2\x0e.game.v1.RoundR\topenRound\"g\n" +
 	"\tLogoutReq\x12\x10\n" +
 	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x17\n" +
 	"\agate_id\x18\x02 \x01(\tR\x06gateId\x12\x17\n" +
@@ -2956,11 +4496,11 @@ const file_api_proto_rawDesc = "" +
 	"\fClaimMailReq\x12\x17\n" +
 	"\amail_id\x18\x01 \x01(\x04R\x06mailId\"4\n" +
 	"\rClaimMailResp\x12#\n" +
-	"\x05items\x18\x01 \x03(\v2\r.game.v1.ItemR\x05items\"Z\n" +
+	"\x05items\x18\x01 \x03(\v2\r.game.v1.ItemR\x05items\"\x84\x01\n" +
 	"\vPurchaseReq\x12\x19\n" +
 	"\border_id\x18\x01 \x01(\tR\aorderId\x12\x18\n" +
-	"\aproduct\x18\x02 \x01(\rR\aproduct\x12\x16\n" +
-	"\x06amount\x18\x03 \x01(\x03R\x06amount\"F\n" +
+	"\aproduct\x18\x02 \x01(\rR\aproduct\x122\n" +
+	"\areceipt\x18\x04 \x01(\v2\x18.game.v1.PurchaseReceiptR\areceiptJ\x04\b\x03\x10\x04R\x06amount\"F\n" +
 	"\fPurchaseResp\x12\x18\n" +
 	"\abalance\x18\x01 \x01(\x03R\abalance\x12\x1c\n" +
 	"\tduplicate\x18\x02 \x01(\bR\tduplicate\"u\n" +
@@ -3079,7 +4619,138 @@ const file_api_proto_rawDesc = "" +
 	"\x06damage\x18\x02 \x01(\x03R\x06damage\"C\n" +
 	"\x10WorldBossHitResp\x12\x17\n" +
 	"\ahp_left\x18\x01 \x01(\x03R\x06hpLeft\x12\x16\n" +
-	"\x06killed\x18\x02 \x01(\bR\x06killedB!Z\x1fgithub.com/gamedev/f1/pkg/pb;pbb\x06proto3"
+	"\x06killed\x18\x02 \x01(\bR\x06killed\"\xad\x03\n" +
+	"\x05Round\x12\x19\n" +
+	"\bround_id\x18\x01 \x01(\x04R\aroundId\x12\x17\n" +
+	"\agame_id\x18\x02 \x01(\tR\x06gameId\x12%\n" +
+	"\x0econfig_version\x18\x03 \x01(\tR\rconfigVersion\x12\x19\n" +
+	"\bseed_hex\x18\x04 \x01(\tR\aseedHex\x12\x1a\n" +
+	"\bcurrency\x18\x05 \x01(\rR\bcurrency\x12\x10\n" +
+	"\x03bet\x18\x06 \x01(\x03R\x03bet\x12\x1b\n" +
+	"\ttotal_win\x18\a \x01(\x03R\btotalWin\x12\x1d\n" +
+	"\n" +
+	"spin_index\x18\b \x01(\rR\tspinIndex\x12&\n" +
+	"\x0ffree_spins_left\x18\t \x01(\rR\rfreeSpinsLeft\x12(\n" +
+	"\x10free_spins_total\x18\n" +
+	" \x01(\rR\x0efreeSpinsTotal\x12\x1e\n" +
+	"\n" +
+	"multiplier\x18\v \x01(\rR\n" +
+	"multiplier\x12\x14\n" +
+	"\x05state\x18\f \x01(\rR\x05state\x12\x1d\n" +
+	"\n" +
+	"created_at\x18\r \x01(\x03R\tcreatedAt\x12\x1d\n" +
+	"\n" +
+	"settled_at\x18\x0e \x01(\x03R\tsettledAt\"m\n" +
+	"\aSpinReq\x12\x17\n" +
+	"\agame_id\x18\x01 \x01(\tR\x06gameId\x12\x10\n" +
+	"\x03bet\x18\x02 \x01(\x03R\x03bet\x12\x1a\n" +
+	"\bcurrency\x18\x03 \x01(\rR\bcurrency\x12\x1b\n" +
+	"\tclient_id\x18\x04 \x01(\tR\bclientId\"c\n" +
+	"\aLineWin\x12\x12\n" +
+	"\x04line\x18\x01 \x01(\rR\x04line\x12\x16\n" +
+	"\x06symbol\x18\x02 \x01(\rR\x06symbol\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\rR\x05count\x12\x16\n" +
+	"\x06payout\x18\x04 \x01(\x03R\x06payout\"\xf0\x02\n" +
+	"\bSpinResp\x12$\n" +
+	"\x05round\x18\x01 \x01(\v2\x0e.game.v1.RoundR\x05round\x12\x12\n" +
+	"\x04grid\x18\x02 \x03(\rR\x04grid\x12\x14\n" +
+	"\x05stops\x18\x03 \x03(\rR\x05stops\x12&\n" +
+	"\x05lines\x18\x04 \x03(\v2\x10.game.v1.LineWinR\x05lines\x12#\n" +
+	"\rscatter_count\x18\x05 \x01(\rR\fscatterCount\x12\x19\n" +
+	"\bspin_win\x18\x06 \x01(\x03R\aspinWin\x12\x18\n" +
+	"\abalance\x18\a \x01(\x03R\abalance\x12,\n" +
+	"\x12free_spins_awarded\x18\b \x01(\rR\x10freeSpinsAwarded\x12%\n" +
+	"\x0eround_finished\x18\t \x01(\bR\rroundFinished\x12\x1f\n" +
+	"\vjackpot_win\x18\n" +
+	" \x01(\x03R\n" +
+	"jackpotWin\x12\x1c\n" +
+	"\tduplicate\x18\v \x01(\bR\tduplicate\"\x0f\n" +
+	"\rRoundStateReq\"Q\n" +
+	"\x0eRoundStateResp\x12$\n" +
+	"\x05round\x18\x01 \x01(\v2\x0e.game.v1.RoundR\x05round\x12\x19\n" +
+	"\bhas_open\x18\x02 \x01(\bR\ahasOpen\"V\n" +
+	"\bGachaReq\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\tR\x06poolId\x12\x14\n" +
+	"\x05times\x18\x02 \x01(\rR\x05times\x12\x1b\n" +
+	"\tclient_id\x18\x03 \x01(\tR\bclientId\"i\n" +
+	"\tGachaDrop\x12\x15\n" +
+	"\x06tpl_id\x18\x01 \x01(\rR\x05tplId\x12\x16\n" +
+	"\x06rarity\x18\x02 \x01(\rR\x06rarity\x12\x14\n" +
+	"\x05count\x18\x03 \x01(\x03R\x05count\x12\x17\n" +
+	"\aby_pity\x18\x04 \x01(\bR\x06byPity\"\x90\x01\n" +
+	"\tGachaResp\x12(\n" +
+	"\x05drops\x18\x01 \x03(\v2\x12.game.v1.GachaDropR\x05drops\x12!\n" +
+	"\fpity_counter\x18\x02 \x01(\rR\vpityCounter\x12\x18\n" +
+	"\abalance\x18\x03 \x01(\x03R\abalance\x12\x1c\n" +
+	"\tduplicate\x18\x04 \x01(\bR\tduplicate\")\n" +
+	"\x0eJackpotInfoReq\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\tR\x06poolId\"V\n" +
+	"\x0fJackpotInfoResp\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\tR\x06poolId\x12\x16\n" +
+	"\x06amount\x18\x02 \x01(\x03R\x06amount\x12\x12\n" +
+	"\x04seed\x18\x03 \x01(\x03R\x04seed\"\x83\x01\n" +
+	"\x0fJackpotClaimReq\x12\x17\n" +
+	"\apool_id\x18\x01 \x01(\tR\x06poolId\x12\x10\n" +
+	"\x03uid\x18\x02 \x01(\x04R\x03uid\x12\x12\n" +
+	"\x04txid\x18\x03 \x01(\tR\x04txid\x12\x16\n" +
+	"\x06amount\x18\x04 \x01(\x03R\x06amount\x12\x19\n" +
+	"\bround_id\x18\x05 \x01(\x04R\aroundId\"<\n" +
+	"\x10JackpotClaimResp\x12\x16\n" +
+	"\x06amount\x18\x01 \x01(\x03R\x06amount\x12\x10\n" +
+	"\x03won\x18\x02 \x01(\bR\x03won\"\r\n" +
+	"\vRGStatusReq\"\xc3\x02\n" +
+	"\fRGStatusResp\x12\x1b\n" +
+	"\tdaily_bet\x18\x01 \x01(\x03R\bdailyBet\x12&\n" +
+	"\x0fdaily_bet_limit\x18\x02 \x01(\x03R\rdailyBetLimit\x12\x1d\n" +
+	"\n" +
+	"daily_loss\x18\x03 \x01(\x03R\tdailyLoss\x12(\n" +
+	"\x10daily_loss_limit\x18\x04 \x01(\x03R\x0edailyLossLimit\x12'\n" +
+	"\x0fsession_seconds\x18\x05 \x01(\x03R\x0esessionSeconds\x12#\n" +
+	"\rsession_limit\x18\x06 \x01(\x03R\fsessionLimit\x12%\n" +
+	"\x0eexcluded_until\x18\a \x01(\x03R\rexcludedUntil\x12\x18\n" +
+	"\ablocked\x18\b \x01(\bR\ablocked\x12\x16\n" +
+	"\x06reason\x18\t \x01(\tR\x06reason\"\xba\x01\n" +
+	"\n" +
+	"GMSetRGReq\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12&\n" +
+	"\x0fdaily_bet_limit\x18\x02 \x01(\x03R\rdailyBetLimit\x12(\n" +
+	"\x10daily_loss_limit\x18\x03 \x01(\x03R\x0edailyLossLimit\x12#\n" +
+	"\rsession_limit\x18\x04 \x01(\x03R\fsessionLimit\x12#\n" +
+	"\rexclude_until\x18\x05 \x01(\x03R\fexcludeUntil\"c\n" +
+	"\x0fPurchaseReceipt\x12\x18\n" +
+	"\achannel\x18\x01 \x01(\tR\achannel\x12\x18\n" +
+	"\areceipt\x18\x02 \x01(\tR\areceipt\x12\x1c\n" +
+	"\tsignature\x18\x03 \x01(\tR\tsignature\"\xad\x01\n" +
+	"\n" +
+	"GMGrantReq\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x1a\n" +
+	"\bcurrency\x18\x02 \x01(\rR\bcurrency\x12\x16\n" +
+	"\x06amount\x18\x03 \x01(\x03R\x06amount\x12)\n" +
+	"\x05items\x18\x04 \x03(\v2\x13.game.v1.AttachmentR\x05items\x12\x16\n" +
+	"\x06reason\x18\x05 \x01(\tR\x06reason\x12\x16\n" +
+	"\x06ticket\x18\x06 \x01(\tR\x06ticket\"4\n" +
+	"\n" +
+	"GMQueryReq\x12\x10\n" +
+	"\x03uid\x18\x01 \x01(\x04R\x03uid\x12\x14\n" +
+	"\x05limit\x18\x02 \x01(\x05R\x05limit\"\x9e\x02\n" +
+	"\vLedgerEntry\x12\x19\n" +
+	"\bentry_id\x18\x01 \x01(\tR\aentryId\x12\x10\n" +
+	"\x03uid\x18\x02 \x01(\x04R\x03uid\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\tR\x04type\x12\x1a\n" +
+	"\bcurrency\x18\x04 \x01(\rR\bcurrency\x12\x16\n" +
+	"\x06amount\x18\x05 \x01(\x03R\x06amount\x12\x18\n" +
+	"\abalance\x18\x06 \x01(\x03R\abalance\x12\x19\n" +
+	"\bround_id\x18\a \x01(\x04R\aroundId\x12\x17\n" +
+	"\agame_id\x18\b \x01(\tR\x06gameId\x12\x10\n" +
+	"\x03ref\x18\t \x01(\tR\x03ref\x12\x13\n" +
+	"\x05ts_ms\x18\n" +
+	" \x01(\x03R\x04tsMs\x12%\n" +
+	"\x0econfig_version\x18\v \x01(\tR\rconfigVersion\"\x95\x01\n" +
+	"\vGMQueryResp\x12'\n" +
+	"\x04base\x18\x01 \x01(\v2\x13.game.v1.PlayerBaseR\x04base\x12.\n" +
+	"\aentries\x18\x02 \x03(\v2\x14.game.v1.LedgerEntryR\aentries\x12-\n" +
+	"\n" +
+	"open_round\x18\x03 \x01(\v2\x0e.game.v1.RoundR\topenRoundB!Z\x1fgithub.com/gamedev/f1/pkg/pb;pbb\x06proto3"
 
 var (
 	file_api_proto_rawDescOnce sync.Once
@@ -3093,7 +4764,7 @@ func file_api_proto_rawDescGZIP() []byte {
 	return file_api_proto_rawDescData
 }
 
-var file_api_proto_msgTypes = make([]protoimpl.MessageInfo, 52)
+var file_api_proto_msgTypes = make([]protoimpl.MessageInfo, 73)
 var file_api_proto_goTypes = []any{
 	(*LoginReq)(nil),         // 0: game.v1.LoginReq
 	(*LoginResp)(nil),        // 1: game.v1.LoginResp
@@ -3146,37 +4817,68 @@ var file_api_proto_goTypes = []any{
 	(*WorldBossState)(nil),   // 48: game.v1.WorldBossState
 	(*WorldBossHitReq)(nil),  // 49: game.v1.WorldBossHitReq
 	(*WorldBossHitResp)(nil), // 50: game.v1.WorldBossHitResp
-	nil,                      // 51: game.v1.BattleResult.ScoreEntry
-	(*PlayerBase)(nil),       // 52: game.v1.PlayerBase
-	(*PlayerBag)(nil),        // 53: game.v1.PlayerBag
-	(*PlayerQuest)(nil),      // 54: game.v1.PlayerQuest
-	(*Item)(nil),             // 55: game.v1.Item
-	(*Quest)(nil),            // 56: game.v1.Quest
-	(*Profile)(nil),          // 57: game.v1.Profile
-	(*PlayerSocial)(nil),     // 58: game.v1.PlayerSocial
-	(*PlayerMail)(nil),       // 59: game.v1.PlayerMail
-	(*Attachment)(nil),       // 60: game.v1.Attachment
-	(*Mail)(nil),             // 61: game.v1.Mail
+	(*Round)(nil),            // 51: game.v1.Round
+	(*SpinReq)(nil),          // 52: game.v1.SpinReq
+	(*LineWin)(nil),          // 53: game.v1.LineWin
+	(*SpinResp)(nil),         // 54: game.v1.SpinResp
+	(*RoundStateReq)(nil),    // 55: game.v1.RoundStateReq
+	(*RoundStateResp)(nil),   // 56: game.v1.RoundStateResp
+	(*GachaReq)(nil),         // 57: game.v1.GachaReq
+	(*GachaDrop)(nil),        // 58: game.v1.GachaDrop
+	(*GachaResp)(nil),        // 59: game.v1.GachaResp
+	(*JackpotInfoReq)(nil),   // 60: game.v1.JackpotInfoReq
+	(*JackpotInfoResp)(nil),  // 61: game.v1.JackpotInfoResp
+	(*JackpotClaimReq)(nil),  // 62: game.v1.JackpotClaimReq
+	(*JackpotClaimResp)(nil), // 63: game.v1.JackpotClaimResp
+	(*RGStatusReq)(nil),      // 64: game.v1.RGStatusReq
+	(*RGStatusResp)(nil),     // 65: game.v1.RGStatusResp
+	(*GMSetRGReq)(nil),       // 66: game.v1.GMSetRGReq
+	(*PurchaseReceipt)(nil),  // 67: game.v1.PurchaseReceipt
+	(*GMGrantReq)(nil),       // 68: game.v1.GMGrantReq
+	(*GMQueryReq)(nil),       // 69: game.v1.GMQueryReq
+	(*LedgerEntry)(nil),      // 70: game.v1.LedgerEntry
+	(*GMQueryResp)(nil),      // 71: game.v1.GMQueryResp
+	nil,                      // 72: game.v1.BattleResult.ScoreEntry
+	(*PlayerBase)(nil),       // 73: game.v1.PlayerBase
+	(*PlayerBag)(nil),        // 74: game.v1.PlayerBag
+	(*PlayerQuest)(nil),      // 75: game.v1.PlayerQuest
+	(*Item)(nil),             // 76: game.v1.Item
+	(*Quest)(nil),            // 77: game.v1.Quest
+	(*Profile)(nil),          // 78: game.v1.Profile
+	(*PlayerSocial)(nil),     // 79: game.v1.PlayerSocial
+	(*PlayerMail)(nil),       // 80: game.v1.PlayerMail
+	(*Attachment)(nil),       // 81: game.v1.Attachment
+	(*Mail)(nil),             // 82: game.v1.Mail
 }
 var file_api_proto_depIdxs = []int32{
-	52, // 0: game.v1.LoginResp.base:type_name -> game.v1.PlayerBase
-	53, // 1: game.v1.LoginResp.bag:type_name -> game.v1.PlayerBag
-	54, // 2: game.v1.LoginResp.quest:type_name -> game.v1.PlayerQuest
-	55, // 3: game.v1.AddItemResp.item:type_name -> game.v1.Item
-	53, // 4: game.v1.GetBagResp.bag:type_name -> game.v1.PlayerBag
-	56, // 5: game.v1.QuestResp.quest:type_name -> game.v1.Quest
-	57, // 6: game.v1.GetProfileResp.profiles:type_name -> game.v1.Profile
-	58, // 7: game.v1.GetSocialResp.social:type_name -> game.v1.PlayerSocial
-	59, // 8: game.v1.GetMailResp.mail:type_name -> game.v1.PlayerMail
-	55, // 9: game.v1.ClaimMailResp.items:type_name -> game.v1.Item
-	51, // 10: game.v1.BattleResult.score:type_name -> game.v1.BattleResult.ScoreEntry
-	60, // 11: game.v1.TransferJob.items:type_name -> game.v1.Attachment
-	61, // 12: game.v1.MailSendJob.mail:type_name -> game.v1.Mail
-	13, // [13:13] is the sub-list for method output_type
-	13, // [13:13] is the sub-list for method input_type
-	13, // [13:13] is the sub-list for extension type_name
-	13, // [13:13] is the sub-list for extension extendee
-	0,  // [0:13] is the sub-list for field type_name
+	73, // 0: game.v1.LoginResp.base:type_name -> game.v1.PlayerBase
+	74, // 1: game.v1.LoginResp.bag:type_name -> game.v1.PlayerBag
+	75, // 2: game.v1.LoginResp.quest:type_name -> game.v1.PlayerQuest
+	51, // 3: game.v1.LoginResp.open_round:type_name -> game.v1.Round
+	76, // 4: game.v1.AddItemResp.item:type_name -> game.v1.Item
+	74, // 5: game.v1.GetBagResp.bag:type_name -> game.v1.PlayerBag
+	77, // 6: game.v1.QuestResp.quest:type_name -> game.v1.Quest
+	78, // 7: game.v1.GetProfileResp.profiles:type_name -> game.v1.Profile
+	79, // 8: game.v1.GetSocialResp.social:type_name -> game.v1.PlayerSocial
+	80, // 9: game.v1.GetMailResp.mail:type_name -> game.v1.PlayerMail
+	76, // 10: game.v1.ClaimMailResp.items:type_name -> game.v1.Item
+	67, // 11: game.v1.PurchaseReq.receipt:type_name -> game.v1.PurchaseReceipt
+	72, // 12: game.v1.BattleResult.score:type_name -> game.v1.BattleResult.ScoreEntry
+	81, // 13: game.v1.TransferJob.items:type_name -> game.v1.Attachment
+	82, // 14: game.v1.MailSendJob.mail:type_name -> game.v1.Mail
+	51, // 15: game.v1.SpinResp.round:type_name -> game.v1.Round
+	53, // 16: game.v1.SpinResp.lines:type_name -> game.v1.LineWin
+	51, // 17: game.v1.RoundStateResp.round:type_name -> game.v1.Round
+	58, // 18: game.v1.GachaResp.drops:type_name -> game.v1.GachaDrop
+	81, // 19: game.v1.GMGrantReq.items:type_name -> game.v1.Attachment
+	73, // 20: game.v1.GMQueryResp.base:type_name -> game.v1.PlayerBase
+	70, // 21: game.v1.GMQueryResp.entries:type_name -> game.v1.LedgerEntry
+	51, // 22: game.v1.GMQueryResp.open_round:type_name -> game.v1.Round
+	23, // [23:23] is the sub-list for method output_type
+	23, // [23:23] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_api_proto_init() }
@@ -3191,7 +4893,7 @@ func file_api_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_api_proto_rawDesc), len(file_api_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   52,
+			NumMessages:   73,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

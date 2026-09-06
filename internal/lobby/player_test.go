@@ -31,10 +31,10 @@ func TestCurrencyNeverGoesNegative(t *testing.T) {
 func TestStackableItemsMerge(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	now := time.Now()
-	if _, ok := p.AddItem(1, 100, 5, now); !ok {
+	if _, ok := p.AddItem(1, 100, 5, now, true); !ok {
 		t.Fatal("加道具失败")
 	}
-	if _, ok := p.AddItem(2, 100, 3, now); !ok {
+	if _, ok := p.AddItem(2, 100, 3, now, true); !ok {
 		t.Fatal("加道具失败")
 	}
 	if len(p.Bag.Items) != 1 {
@@ -48,8 +48,8 @@ func TestStackableItemsMerge(t *testing.T) {
 func TestNonStackableItemsOccupySlots(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	now := time.Now()
-	p.AddItem(1, 20000, 1, now)
-	p.AddItem(2, 20000, 1, now)
+	p.AddItem(1, 20000, 1, now, false)
+	p.AddItem(2, 20000, 1, now, false)
 	if len(p.Bag.Items) != 2 {
 		t.Fatalf("不可堆叠道具应各占一格，实际 %d", len(p.Bag.Items))
 	}
@@ -59,9 +59,9 @@ func TestBagFull(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	p.Bag.Capacity = 2
 	now := time.Now()
-	p.AddItem(1, 20001, 1, now)
-	p.AddItem(2, 20002, 1, now)
-	if _, ok := p.AddItem(3, 20003, 1, now); ok {
+	p.AddItem(1, 20001, 1, now, false)
+	p.AddItem(2, 20002, 1, now, false)
+	if _, ok := p.AddItem(3, 20003, 1, now, false); ok {
 		t.Fatal("背包已满时应拒绝")
 	}
 }
@@ -70,8 +70,8 @@ func TestBagFull(t *testing.T) {
 func TestRemoveItemAllOrNothing(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	now := time.Now()
-	p.AddItem(1, 100, 3, now)
-	p.AddItem(2, 100, 2, now)
+	p.AddItem(1, 100, 3, now, true)
+	p.AddItem(2, 100, 2, now, true)
 
 	if ok := p.RemoveItemByTpl(100, 10); ok {
 		t.Fatal("数量不足应失败")
@@ -89,7 +89,7 @@ func TestRemoveItemAllOrNothing(t *testing.T) {
 
 func TestEmptyStacksAreCompacted(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
-	p.AddItem(1, 100, 3, time.Now())
+	p.AddItem(1, 100, 3, time.Now(), true)
 	p.RemoveItemByTpl(100, 3)
 	if len(p.Bag.Items) != 0 {
 		t.Fatalf("空格子应被清理，实际 %d", len(p.Bag.Items))
@@ -143,7 +143,7 @@ func TestFromBlobsRejectsCorruptData(t *testing.T) {
 func TestMarshalRoundTrip(t *testing.T) {
 	p := NewPlayer(1001, time.Now())
 	p.AddCurrency(uint32(protocol.CurrencyGold), 500)
-	p.AddItem(7, 100, 2, time.Now())
+	p.AddItem(7, 100, 2, time.Now(), true)
 	keys := store.NewKeys(store.TagUID, 1024, "lobby")
 
 	kv, err := p.MarshalKeys(keys, []store.Module{store.ModBase, store.ModBag})

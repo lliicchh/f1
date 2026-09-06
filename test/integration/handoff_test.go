@@ -29,13 +29,10 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 	// 在扩容前写入数据，交接后必须还在。
 	const uid = uint64(5005)
 	if err := lobbyCall(t, n1, uid, protocol.CmdLogin,
-		&pb.LoginReq{Uid: uid, GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
+		&pb.LoginReq{Uid: uid, Token: harness.Token(t, uid), GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := lobbyCall(t, n1, uid, protocol.CmdAddCurrency,
-		&pb.AddCurrencyReq{Currency: uint32(protocol.CurrencyGold), Delta: 777}, &pb.AddCurrencyResp{}); err != nil {
-		t.Fatal(err)
-	}
+	grant(t, n1, uid, uint32(protocol.CurrencyGold), 777)
 
 	// 第二个实例上线。
 	n2 := env.Node(t, "lobby", "lobby", 2, lobbyCfg)
@@ -70,13 +67,8 @@ func TestHandoffRebalancesOnScaleOut(t *testing.T) {
 	}
 
 	// 数据必须完好：交接前旧 owner 做过全量刷盘，新 owner 从 Redis 加载。
-	var bal pb.AddCurrencyResp
-	if err := lobbyCall(t, n1, uid, protocol.CmdAddCurrency,
-		&pb.AddCurrencyReq{Currency: uint32(protocol.CurrencyGold), Delta: 0}, &bal); err != nil {
-		t.Fatalf("交接后读取失败: %v", err)
-	}
-	if bal.GetBalance() != 777 {
-		t.Fatalf("交接后余额 = %d，期望 777 —— 数据在交接中丢了", bal.GetBalance())
+	if bal := grant(t, n1, uid, uint32(protocol.CurrencyGold), 0); bal != 777 {
+		t.Fatalf("交接后余额 = %d，期望 777 —— 数据在交接中丢了", bal)
 	}
 }
 
@@ -107,13 +99,10 @@ func TestGracefulShutdownPersistsData(t *testing.T) {
 
 	const uid = uint64(6006)
 	if err := lobbyCall(t, n, uid, protocol.CmdLogin,
-		&pb.LoginReq{Uid: uid, GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
+		&pb.LoginReq{Uid: uid, Token: harness.Token(t, uid), GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := lobbyCall(t, n, uid, protocol.CmdAddCurrency,
-		&pb.AddCurrencyReq{Currency: uint32(protocol.CurrencyGold), Delta: 1234}, &pb.AddCurrencyResp{}); err != nil {
-		t.Fatal(err)
-	}
+	grant(t, n, uid, uint32(protocol.CurrencyGold), 1234)
 
 	// 定时刷盘被关掉了，此刻 Redis 里应该还没有这笔钱。
 	if blob, err := n.Redis.Get(ctx, n.Keys.Player(uid, store.ModBase)).Bytes(); err == nil {

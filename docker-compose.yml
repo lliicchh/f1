@@ -11,6 +11,10 @@
 x-common: &common
   env_file:
     - "./${ENV_FILE:-deploy/s1.env}"
+  volumes:
+    # 游戏配置表。改数值走配置发布，不走发版；
+    # 版本号是内容哈希，随每个回合落盘，事后复算靠它（评审 P1-3）。
+    - "./deploy/game.json:/etc/game/game.json:ro"
   depends_on:
     etcd: {condition: service_healthy}
     nats: {condition: service_started}
@@ -84,12 +88,17 @@ services:
 
   # ------------------------- 网关 -------------------------
   # Gateway 需固定端口（要被外部访问 + LB 配置），本来就得展开写。
+  # 网关多加载一份 gateway.env，把 INTERNAL_SECRET 覆盖成空。
+  # 网关是唯一面向公网的进程，不该有能力签发内部命令（评审 P0-1）。
   gateway-1:
     <<: *common
     image: game/gateway:${TAG:-dev}
     build:
       context: .
       args: {SVC: gateway}
+    env_file:
+      - "./${ENV_FILE:-deploy/s1.env}"
+      - "./deploy/gateway.env"
     environment:
       NODE_SEQ: "1"
       ADVERTISE_ADDR: "gateway-1:7000"
@@ -101,6 +110,9 @@ services:
     build:
       context: .
       args: {SVC: gateway}
+    env_file:
+      - "./${ENV_FILE:-deploy/s1.env}"
+      - "./deploy/gateway.env"
     environment:
       NODE_SEQ: "2"
       ADVERTISE_ADDR: "gateway-2:7000"

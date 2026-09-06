@@ -12,6 +12,7 @@ import (
 
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/profile"
+	"github.com/gamedev/f1/pkg/protocol"
 	"github.com/gamedev/f1/pkg/store"
 )
 
@@ -26,6 +27,14 @@ type Player struct {
 	Quest  *pb.PlayerQuest
 	Social *pb.PlayerSocial
 	Mail   *pb.PlayerMail
+
+	// Round 是未结算的游戏回合。nil 表示当前没有进行中的回合。
+	// 它随投注原子落盘，断线重连后由 §10.1 的懒加载取回（评审 P1-1）。
+	Round *pb.Round
+	// RG 是责任游戏限额累计（评审 P1-6）。
+	RG *pb.PlayerRG
+	// Gacha 是抽卡保底计数（评审 P1-7）。
+	Gacha *pb.PlayerGacha
 
 	// —— 运行态，不落盘 ——
 	Online     bool
@@ -54,6 +63,8 @@ func NewPlayer(uid uint64, now time.Time) *Player {
 		Quest:      &pb.PlayerQuest{Uid: uid},
 		Social:     &pb.PlayerSocial{Uid: uid},
 		Mail:       &pb.PlayerMail{Uid: uid},
+		RG:         &pb.PlayerRG{Uid: uid},
+		Gacha:      &pb.PlayerGacha{Uid: uid},
 		LastActive: now,
 	}
 }
@@ -132,6 +143,32 @@ func FromBlobs(uid uint64, blobs map[store.Module][]byte, now time.Time) (*Playe
 		m.Uid = uid
 		p.Mail = m
 	}
+	if b, ok := blobs[store.ModRound]; ok && len(b) > 0 {
+		r := &pb.Round{}
+		if err := proto.Unmarshal(b, r); err != nil {
+			return nil, err
+		}
+		// 只有真正未结算的回合才恢复；已结算的留着只会让客户端困惑。
+		if r.GetRoundId() != 0 && r.GetState() == protocol.RoundOpen {
+			p.Round = r
+		}
+	}
+	if b, ok := blobs[store.ModRG]; ok {
+		m := &pb.PlayerRG{}
+		if err := proto.Unmarshal(b, m); err != nil {
+			return nil, err
+		}
+		m.Uid = uid
+		p.RG = m
+	}
+	if b, ok := blobs[store.ModGacha]; ok {
+		m := &pb.PlayerGacha{}
+		if err := proto.Unmarshal(b, m); err != nil {
+			return nil, err
+		}
+		m.Uid = uid
+		p.Gacha = m
+	}
 	return p, nil
 }
 
@@ -150,6 +187,17 @@ func (p *Player) Marshal(m store.Module) ([]byte, error) {
 		return proto.Marshal(p.Social)
 	case store.ModMail:
 		return proto.Marshal(p.Mail)
+	case store.ModRound:
+		if p.Round == nil {
+			// 回合已结算：写入空串把上一局清掉，
+			// 否则下次加载会把一个陈旧回合当成「未完成」恢复出来。
+			return []byte{}, nil
+		}
+		return proto.Marshal(p.Round)
+	case store.ModRG:
+		return proto.Marshal(p.RG)
+	case store.ModGacha:
+		return proto.Marshal(p.Gacha)
 	}
 	return nil, nil
 }
@@ -212,11 +260,14 @@ func (p *Player) CountItem(tplID uint32) int64 {
 }
 
 // AddItem 加入道具（可堆叠的合并到已有格子）。instanceID 由雪花生成。
-func (p *Player) AddItem(instanceID uint64, tplID uint32, count int64, now time.Time) (*pb.Item, bool) {
+//
+// stackable 由配置决定而不是硬编码号段：道具是否可堆叠属于策划数值，
+// 写死在代码里就意味着加一个道具要发一次版。
+func (p *Player) AddItem(instanceID uint64, tplID uint32, count int64, now time.Time, stackable bool) (*pb.Item, bool) {
 	if count <= 0 {
 		return nil, false
 	}
-	if Stackable(tplID) {
+	if stackable {
 		for _, it := range p.Bag.GetItems() {
 			if it.GetTplId() == tplID {
 				it.Count += count
@@ -282,9 +333,6 @@ func (p *Player) compactBag() {
 	}
 	p.Bag.Items = out
 }
-
-// Stackable 报告道具是否可堆叠。真实项目里应查配置表，这里按模板号段约定。
-func Stackable(tplID uint32) bool { return tplID < 10000 }
 
 // Quest 查找任务。
 func (p *Player) FindQuest(id uint32) *pb.Quest {

@@ -19,7 +19,10 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/redis/go-redis/v9"
 	"go.etcd.io/etcd/server/v3/embed"
+	"google.golang.org/protobuf/proto"
 
+	"github.com/gamedev/f1/pkg/authn"
+	"github.com/gamedev/f1/pkg/authz"
 	"github.com/gamedev/f1/pkg/bus"
 	"github.com/gamedev/f1/pkg/config"
 	"github.com/gamedev/f1/pkg/etcdx"
@@ -27,6 +30,7 @@ import (
 	"github.com/gamedev/f1/pkg/idgen"
 	"github.com/gamedev/f1/pkg/node"
 	"github.com/gamedev/f1/pkg/nodeid"
+	"github.com/gamedev/f1/pkg/protocol"
 	"github.com/gamedev/f1/pkg/store"
 )
 
@@ -121,6 +125,14 @@ func (e *Env) Config(t *testing.T, svcName string, nodeSeq int, tweak func(*conf
 	t.Setenv("METRICS_ADDR", "")
 	t.Setenv("REDIS_REQUIRE_NOEVICTION", "false") // miniredis 不支持 CONFIG GET
 
+	// 安全相关的密钥。测试里显式配齐，正是为了让测试跑在与生产同一套鉴权规则下 ——
+	// 如果测试靠「关掉鉴权」才能通过，那鉴权就等于没测。
+	t.Setenv("INTERNAL_SECRET", TestInternalSecret)
+	t.Setenv("LOGIN_SECRET", TestLoginSecret)
+	t.Setenv("PAYMENT_SECRET", TestPaymentSecret)
+	t.Setenv("ALLOW_DEV_AUTH", "false")
+	t.Setenv("PAYMENT_SANDBOX", "false")
+
 	cfg, id, err := config.Load(svcName)
 	if err != nil {
 		t.Fatalf("装载配置失败: %v", err)
@@ -184,8 +196,58 @@ func (e *Env) Node(t *testing.T, svcName, kind string, nodeSeq int, tweak func(*
 	}
 }
 
+// 测试用密钥。生产由部署下发，且网关不应拿到 INTERNAL_SECRET。
+const (
+	TestInternalSecret = "test-internal-secret-do-not-use-in-prod"
+	TestLoginSecret    = "test-login-secret-do-not-use-in-prod"
+	TestPaymentSecret  = "test-payment-secret-do-not-use-in-prod"
+)
+
 // Redis 返回底层 miniredis，用于制造故障。
 func (e *Env) Redis() *miniredis.Miniredis { return e.redis }
+
+// Token 为某个 uid 签发一张登录票据。
+func Token(t *testing.T, uid uint64) string {
+	t.Helper()
+	v := authn.NewVerifier(TestLoginSecret, false)
+	tok, err := v.Issue(uid, time.Hour)
+	if err != nil {
+		t.Fatalf("签发登录票据失败: %v", err)
+	}
+	return tok
+}
+
+// InternalCall 以「服务端内部」的身份发起一条带签名的命令。
+//
+// 测试里凡是要发内部 / GM 命令，都必须走这里 —— 与生产路径完全一致。
+func InternalCall(ctx context.Context, t *testing.T, n *node.Node, subj string,
+	cmd protocol.Cmd, uid uint64, operator string, body, out proto.Message) error {
+	t.Helper()
+
+	env, err := n.Bus.NewEnvelope(cmd, uid, "", body)
+	if err != nil {
+		return err
+	}
+	env.Operator = operator
+	signer := authz.NewSigner(TestInternalSecret)
+	if err := signer.Sign(env); err != nil {
+		return err
+	}
+	resp, err := n.Bus.RequestEnv(ctx, subj, env)
+	if err != nil {
+		return err
+	}
+	if resp.GetErrCode() != 0 {
+		return &bus.RemoteError{
+			Code: protocol.ErrCode(resp.GetErrCode()),
+			Msg:  resp.GetErrMsg(),
+		}
+	}
+	if out != nil {
+		return bus.Unpack(resp, out)
+	}
+	return nil
+}
 
 func freePort(t *testing.T) int {
 	t.Helper()

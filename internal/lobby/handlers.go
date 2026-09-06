@@ -9,9 +9,13 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	"github.com/gamedev/f1/pkg/bus"
+	"github.com/gamedev/f1/pkg/ledger"
 	"github.com/gamedev/f1/pkg/logx"
+	"github.com/gamedev/f1/pkg/metrics"
+	"github.com/gamedev/f1/pkg/payment"
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/protocol"
+	"github.com/gamedev/f1/pkg/rg"
 	"github.com/gamedev/f1/pkg/store"
 	"github.com/gamedev/f1/pkg/subject"
 	"github.com/gamedev/f1/pkg/xtx"
@@ -29,6 +33,16 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 	}
 
 	now := time.Now()
+	conf := s.lob.conf.Get()
+
+	// 自我排除期内禁止登录。这是合规硬要求，优先于一切业务逻辑。
+	if blocked, until := rg.LoginBlocked(p.RG, now); blocked {
+		metrics.RGBlocked.WithLabelValues("self_excluded").Inc()
+		_ = m.RespondErr(protocol.ErrSelfExcluded, "账号处于自我排除期，至 %s",
+			time.UnixMilli(until).Format(time.RFC3339))
+		return
+	}
+
 	reconnect := p.Online || !p.OfflineAt.IsZero()
 
 	if p.Online && p.ConnID != req.GetConnId() {
@@ -47,6 +61,11 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 	p.Base.LastLogin = now.UnixMilli()
 	s.mark(p.UID, store.ModBase)
 
+	// 会话计时从登录开始，供责任游戏的时长限制使用。
+	rg.StartSession(p.RG, now)
+	rg.Rollover(p.RG, now, conf.RG)
+	s.mark(p.UID, store.ModRG)
+
 	// 离线期间投递到「待领取队列」的邮件在这里消费（§6.5）。
 	s.drainPendingMail(p.UID)
 
@@ -57,12 +76,22 @@ func (s *Shard) handleLogin(p *Player, m *bus.Msg) {
 
 	s.lob.PublishPlayerEvent(p.UID, "login", p.Profile(), m.Env.GetTraceId())
 
-	_ = m.Respond(&pb.LoginResp{
+	resp := &pb.LoginResp{
 		Base:      p.Base,
 		Bag:       p.Bag,
 		Quest:     p.Quest,
 		Reconnect: reconnect,
-	})
+	}
+	// 未结算的回合必须随登录返回：玩家在免费旋转中途断线，
+	// 重连后要能接着打完（评审 P1-1，GLI-19 对 incomplete round 的要求）。
+	if p.Round != nil {
+		resp.OpenRound = p.Round
+		metrics.RoundRecovered.Inc()
+		logx.Trace(m.Env.GetTraceId()).Info("恢复未结算回合",
+			"uid", p.UID, "round", p.Round.GetRoundId(),
+			"free_left", p.Round.GetFreeSpinsLeft(), "game", p.Round.GetGameId())
+	}
+	_ = m.Respond(resp)
 }
 
 func (s *Shard) handleLogout(p *Player, m *bus.Msg) {
@@ -108,9 +137,16 @@ func (s *Shard) handleAddCurrency(p *Player, m *bus.Msg) {
 	}
 	s.mark(p.UID, store.ModBase)
 
-	logx.Trace(m.Env.GetTraceId()).Debug("货币变更",
+	// 每一笔货币变动都要有流水，否则事后无法解释余额是怎么来的（评审 P1-2）。
+	if req.GetDelta() != 0 {
+		s.appendLedger(p, s.entry(p.UID, ledger.TypeGrant, req.GetCurrency(),
+			req.GetDelta(), balance).WithRef(req.GetReason()).
+			WithOperator(m.Env.GetOperator()))
+	}
+
+	logx.Trace(m.Env.GetTraceId()).Info("货币变更",
 		"uid", p.UID, "currency", req.GetCurrency(), "delta", req.GetDelta(),
-		"balance", balance, "reason", req.GetReason())
+		"balance", balance, "reason", req.GetReason(), "from", m.Env.GetFromNode())
 
 	_ = m.Respond(&pb.AddCurrencyResp{Balance: balance})
 }
@@ -129,12 +165,16 @@ func (s *Shard) handleAddItem(p *Player, m *bus.Msg) {
 		return
 	}
 
-	it, ok := p.AddItem(id, req.GetTplId(), req.GetCount(), time.Now())
+	conf := s.lob.conf.Get()
+	it, ok := p.AddItem(id, req.GetTplId(), req.GetCount(), time.Now(), conf.Stackable(req.GetTplId()))
 	if !ok {
 		_ = m.RespondErr(protocol.ErrBagFull, "背包已满（容量 %d）", p.Bag.GetCapacity())
 		return
 	}
 	s.mark(p.UID, store.ModBag)
+
+	// 道具是资产，发放要留痕。数量记在 ref 里（流水的 amount 字段留给货币）。
+	s.appendItemLedger(p, ledger.TypeGrant, req.GetTplId(), req.GetCount(), req.GetReason())
 	_ = m.Respond(&pb.AddItemResp{Item: it})
 }
 
@@ -292,6 +332,8 @@ func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 		return
 	}
 
+	conf := s.lob.conf.Get()
+
 	// 在副本上结算，落盘成功后才替换内存。
 	bagCopy := proto.Clone(p.Bag).(*pb.PlayerBag)
 	mailCopy := proto.Clone(p.Mail).(*pb.PlayerMail)
@@ -305,7 +347,7 @@ func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 			_ = m.RespondErr(protocol.ErrInternal, "ID 生成失败: %v", err)
 			return
 		}
-		it, ok := tmp.AddItem(id, att.GetTplId(), att.GetCount(), now)
+		it, ok := tmp.AddItem(id, att.GetTplId(), att.GetCount(), now, conf.Stackable(att.GetTplId()))
 		if !ok {
 			_ = m.RespondErr(protocol.ErrBagFull, "背包空间不足，无法领取附件")
 			return
@@ -335,7 +377,20 @@ func (s *Shard) handleClaimMail(p *Player, m *bus.Msg) {
 	payload, _ := proto.Marshal(resp)
 	orderKey := keys.Order(p.UID, fmt.Sprintf("mail%d", req.GetMailId()))
 
-	s.writeThrough(p, orderKey, payload, kv, func(res *store.WriteThroughResult, err error) {
+	entries := make([]*ledger.Entry, 0, len(mail.GetAttachments()))
+	for _, att := range mail.GetAttachments() {
+		entries = append(entries, s.entry(p.UID, ledger.TypeMailClaim, 0, 0, 0).
+			WithRef(fmt.Sprintf("mail=%d;tpl=%d;count=%d",
+				req.GetMailId(), att.GetTplId(), att.GetCount())))
+	}
+
+	s.commit(p, CommitSpec{
+		Op:      "mail_claim",
+		IdemKey: orderKey,
+		Payload: payload,
+		Entries: entries,
+		KV:      kv,
+	}, func(res *store.CommitResult, err error) {
 		if err != nil {
 			_ = m.RespondErr(protocol.ErrInternal, "领取失败: %v", err)
 			return
@@ -443,8 +498,14 @@ func (s *Shard) drainPendingMail(uid uint64) {
 // L0 写穿：充值
 // ---------------------------------------------------------------------------
 
-// handlePurchase 是 L0 写穿的样板：同步落 Redis 成功后才改内存回包，
-// 幂等由客户端唯一订单号保证，重复提交返回首次结果（§6.2）。
+// handlePurchase 处理充值。
+//
+// 评审 P0-2 的修复。原来的实现有两个洞：
+//   - 未知商品按客户端给的 amount 发钱
+//   - 完全没有支付校验
+//
+// 现在：商品必须在配置表里，金额只取配置值，且必须通过渠道回执验签。
+// 幂等（订单号）保护的是「重复」，验签保护的是「伪造」，两者缺一不可。
 func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 	var req pb.PurchaseReq
 	if err := bus.Unpack(m.Env, &req); err != nil {
@@ -456,13 +517,38 @@ func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 		return
 	}
 
-	currency, amount := ProductReward(req.GetProduct(), req.GetAmount())
-	if amount <= 0 {
-		_ = m.RespondErr(protocol.ErrBadRequest, "商品配置非法")
+	conf := s.lob.conf.Get()
+	product, ok := conf.Product(req.GetProduct())
+	if !ok {
+		// 未知商品一律拒绝。以前这里会按客户端给的金额发钱。
+		_ = m.RespondErr(protocol.ErrProductUnknown, "未知商品 %d", req.GetProduct())
 		return
 	}
 
-	// 在副本上算出结果，Redis 确认后才替换内存。
+	receipt := req.GetReceipt()
+	order := payment.Order{
+		OrderID:    req.GetOrderId(),
+		UID:        p.UID,
+		ProductID:  product.ID,
+		Channel:    receipt.GetChannel(),
+		Receipt:    receipt.GetReceipt(),
+		Signature:  receipt.GetSignature(),
+		PriceCents: product.PriceCents,
+	}
+	if !product.AllowsChannel(order.Channel) {
+		_ = m.RespondErr(protocol.ErrReceiptInvalid, "商品 %d 不支持渠道 %q", product.ID, order.Channel)
+		return
+	}
+	if err := s.lob.payment.Verify(order); err != nil {
+		logx.Trace(m.Env.GetTraceId()).Warn("充值回执校验失败",
+			"uid", p.UID, "order", req.GetOrderId(), "product", product.ID, "err", err)
+		_ = m.RespondErr(protocol.ErrReceiptInvalid, "支付回执无效")
+		return
+	}
+
+	// 到账数量只取配置值，客户端说了不算。
+	currency, amount := product.Currency, product.Amount
+
 	baseCopy := proto.Clone(p.Base).(*pb.PlayerBase)
 	if baseCopy.Currency == nil {
 		baseCopy.Currency = map[uint32]int64{}
@@ -481,44 +567,38 @@ func (s *Shard) handlePurchase(p *Player, m *bus.Msg) {
 	resp := &pb.PurchaseResp{Balance: balance}
 	payload, _ := proto.Marshal(resp)
 
-	s.writeThrough(p, keys.Order(p.UID, req.GetOrderId()), payload, kv,
-		func(res *store.WriteThroughResult, err error) {
-			if err != nil {
-				_ = m.RespondErr(protocol.ErrInternal, "充值失败: %v", err)
-				return
-			}
-			if res.Duplicate {
-				out := &pb.PurchaseResp{}
-				_ = proto.Unmarshal(res.Payload, out)
-				out.Duplicate = true
-				logx.Trace(m.Env.GetTraceId()).Info("重复订单，返回首次结果",
-					"uid", p.UID, "order", req.GetOrderId(), "balance", out.GetBalance())
-				_ = m.Respond(out)
-				return
-			}
-			p.Base = baseCopy
-			logx.Trace(m.Env.GetTraceId()).Info("充值到账",
-				"uid", p.UID, "order", req.GetOrderId(), "currency", currency,
-				"amount", amount, "balance", balance)
-			_ = m.Respond(resp)
-		})
-}
-
-// ProductReward 返回商品对应的货币与数量。真实项目应查配置表。
-func ProductReward(product uint32, amount int64) (uint32, int64) {
-	switch product {
-	case 1:
-		return uint32(protocol.CurrencyDiamond), 60
-	case 2:
-		return uint32(protocol.CurrencyDiamond), 300
-	case 3:
-		return uint32(protocol.CurrencyGold), 10000
-	default:
-		if amount > 0 {
-			return uint32(protocol.CurrencyDiamond), amount
-		}
-		return 0, 0
+	entries := []*ledger.Entry{
+		s.entry(p.UID, ledger.TypePurchase, currency, amount, balance).
+			WithRef(fmt.Sprintf("order=%s;product=%d;channel=%s;price=%d",
+				req.GetOrderId(), product.ID, order.Channel, product.PriceCents)),
 	}
+
+	s.commit(p, CommitSpec{
+		Op:      "purchase",
+		IdemKey: keys.Order(p.UID, req.GetOrderId()),
+		Payload: payload,
+		Entries: entries,
+		KV:      kv,
+	}, func(res *store.CommitResult, cerr error) {
+		if cerr != nil {
+			_ = m.RespondErr(protocol.ErrInternal, "充值失败: %v", cerr)
+			return
+		}
+		if res.Duplicate {
+			out := &pb.PurchaseResp{}
+			_ = proto.Unmarshal(res.Payload, out)
+			out.Duplicate = true
+			logx.Trace(m.Env.GetTraceId()).Info("重复订单，返回首次结果",
+				"uid", p.UID, "order", req.GetOrderId(), "balance", out.GetBalance())
+			_ = m.Respond(out)
+			return
+		}
+		p.Base = baseCopy
+		logx.Trace(m.Env.GetTraceId()).Info("充值到账",
+			"uid", p.UID, "order", req.GetOrderId(), "product", product.ID,
+			"currency", currency, "amount", amount, "balance", balance)
+		_ = m.Respond(resp)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -556,8 +636,9 @@ func (s *Shard) handleBattleSettle(p *Player, m *bus.Msg) {
 	baseCopy.Currency[uint32(protocol.CurrencyGold)] += gold
 	baseCopy.Exp += uint64(exp)
 	leveledUp := false
-	for baseCopy.Exp >= LevelUpExp(baseCopy.Level) {
-		baseCopy.Exp -= LevelUpExp(baseCopy.Level)
+	conf := s.lob.conf.Get()
+	for baseCopy.Exp >= conf.ExpToLevel(baseCopy.Level) {
+		baseCopy.Exp -= conf.ExpToLevel(baseCopy.Level)
 		baseCopy.Level++
 		leveledUp = true
 	}
@@ -574,7 +655,19 @@ func (s *Shard) handleBattleSettle(p *Player, m *bus.Msg) {
 	payload, _ := proto.Marshal(resp)
 	orderKey := keys.Order(p.UID, fmt.Sprintf("battle%d", res.GetRoomId()))
 
-	s.writeThrough(p, orderKey, payload, kv, func(wt *store.WriteThroughResult, err error) {
+	entries := []*ledger.Entry{
+		s.entry(p.UID, ledger.TypeBattleReward, uint32(protocol.CurrencyGold), gold,
+			baseCopy.Currency[uint32(protocol.CurrencyGold)]).
+			WithRef(fmt.Sprintf("room=%d", res.GetRoomId())),
+	}
+
+	s.commit(p, CommitSpec{
+		Op:      "battle",
+		IdemKey: orderKey,
+		Payload: payload,
+		Entries: entries,
+		KV:      kv,
+	}, func(wt *store.CommitResult, err error) {
 		if err != nil {
 			_ = m.RespondErr(protocol.ErrInternal, "结算失败: %v", err)
 			return
@@ -592,9 +685,6 @@ func (s *Shard) handleBattleSettle(p *Player, m *bus.Msg) {
 		_ = m.Respond(resp)
 	})
 }
-
-// LevelUpExp 返回升到下一级所需经验。
-func LevelUpExp(level uint32) uint64 { return uint64(100 * (level + 1)) }
 
 // ---------------------------------------------------------------------------
 // 跨分片转移（§8）
@@ -755,7 +845,7 @@ func (s *Shard) handleApplyTransfer(p *Player, m *bus.Msg) {
 			_ = m.RespondErr(protocol.ErrInternal, "ID 生成失败")
 			return
 		}
-		if _, ok := tmp.AddItem(id, att.GetTplId(), att.GetCount(), now); !ok {
+		if _, ok := tmp.AddItem(id, att.GetTplId(), att.GetCount(), now, s.lob.conf.Get().Stackable(att.GetTplId())); !ok {
 			// 背包满：不能默默丢弃资产，转投待领取邮件队列。
 			s.lob.fallbackToMailbox(p.UID, &job, m.Env.GetTraceId())
 			_ = m.Respond(&pb.Ack{Ok: true})

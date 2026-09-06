@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/redis/go-redis/v9"
+
 	"github.com/gamedev/f1/pkg/bus"
+	"github.com/gamedev/f1/pkg/ledger"
 	"github.com/gamedev/f1/pkg/logx"
 	"github.com/gamedev/f1/pkg/metrics"
 	"github.com/gamedev/f1/pkg/profile"
@@ -17,8 +21,20 @@ import (
 )
 
 // maxWaitersPerPlayer 限制单个玩家的排队请求数。
-// 超过说明该玩家的加载或写穿卡住了，继续堆积只会放大故障。
-const maxWaitersPerPlayer = 64
+//
+// 超过说明该玩家的加载或提交卡住了，继续堆积只会放大故障。
+// slots 的 autoplay 会连续发 spin，每次 spin 都是一次 L0 提交，
+// 因此这个值不能太小 —— 太小会在网络抖动时误伤正常玩家（评审 P2-2）。
+const maxWaitersPerPlayer = 256
+
+// isGatewayNode 判断消息是否来自网关。
+//
+// nodeID 形如 s1-gateway-1，服务名是第二段。这只是快速路径判断；
+// 真正的安全边界是签名校验 —— 网关没有内部密钥，谎报身份也签不出合法签名。
+func isGatewayNode(nodeID string) bool {
+	parts := strings.Split(nodeID, "-")
+	return len(parts) >= 2 && parts[1] == "gateway"
+}
 
 // Shard 是一个 Lobby 分片的全部内存状态。
 //
@@ -96,10 +112,28 @@ func (s *Shard) Handle(m *bus.Msg) {
 	cmd := m.Cmd()
 	uid := m.Env.GetUid()
 
+	// 第二道鉴权（评审 P0-1）。
+	//
+	// 网关已经按 Cmd.Level() 挡过一次，这里再验一次签名，理由是「不信任网关」：
+	// 网关配置写错、或有人直接连上内网 NATS，这一关仍然拦得住。
+	// fromClient 判定依据是发送方 nodeID —— 网关签不出内部签名，
+	// 所以即便它谎称自己不是网关，签名校验一样过不了。
+	fromClient := isGatewayNode(m.Env.GetFromNode())
+	if err := s.lob.signer.Verify(m.Env, fromClient); err != nil {
+		metrics.AuthzRejected.WithLabelValues(cmd.Name(), "verify").Inc()
+		logx.Trace(m.Env.GetTraceId()).Error("命令鉴权失败（告警：可能有人在探测内部接口）",
+			"cmd", cmd, "level", cmd.Level(), "from", m.Env.GetFromNode(), "uid", uid, "err", err)
+		_ = m.RespondErr(protocol.ErrPermission, "无权调用该命令")
+		return
+	}
+
 	// 不需要玩家对象的命令先处理掉。
 	switch cmd {
 	case protocol.CmdGetProfile:
 		s.handleGetProfile(m)
+		return
+	case protocol.CmdJackpotInfo:
+		s.handleJackpotInfo(m)
 		return
 	}
 
@@ -162,6 +196,29 @@ func (s *Shard) dispatch(p *Player, m *bus.Msg) {
 		s.handleApplyMail(p, m)
 	case protocol.CmdBattleSettle:
 		s.handleBattleSettle(p, m)
+
+	// --- slots ---
+	case protocol.CmdSpin:
+		s.handleSpin(p, m)
+	case protocol.CmdRoundState:
+		s.handleRoundState(p, m)
+	case protocol.CmdGacha:
+		s.handleGacha(p, m)
+	case protocol.CmdRGStatus:
+		s.handleRGStatus(p, m)
+	case protocol.CmdApplyJackpot:
+		s.handleApplyJackpot(p, m)
+
+	// --- GM ---
+	case protocol.CmdGMGrant:
+		s.handleGMGrant(p, m)
+	case protocol.CmdGMQuery:
+		s.handleGMQuery(p, m)
+	case protocol.CmdGMSetRG:
+		s.handleGMSetRG(p, m)
+	case protocol.CmdGMKick:
+		s.handleGMKick(p, m)
+
 	default:
 		_ = m.RespondErr(protocol.ErrBadRequest, "未知命令 %d", m.Env.GetCmd())
 	}
@@ -321,6 +378,10 @@ func (s *Shard) Tick(now time.Time) {
 	if now.After(s.nextTxScan) {
 		s.nextTxScan = now.Add(cfg.TxScanInterval)
 		s.lob.scanPendingTx(s.o.Shard)
+		// 奖池派彩的补偿扫描：只让 0 号分片的 owner 做，避免每个分片都扫一遍。
+		if s.o.Shard == 0 {
+			s.lob.scanJackpotPayouts()
+		}
 	}
 }
 
@@ -524,12 +585,88 @@ func (s *Shard) Close(reason shard.ReleaseReason) {
 // L0 写穿
 // ---------------------------------------------------------------------------
 
+// CommitSpec 描述一次资金类提交。
+//
+// 调用约定（很重要）：改动先算在**副本**上，序列化进 KV，提交成功后才换进内存。
+// 这样兑现了 §6.2 的「同步落 Redis 成功后才改内存回包」，
+// 同时保证「余额 + 流水 + 回合 + 限额」要么全成，要么全不成。
+type CommitSpec struct {
+	// IdemKey 为空表示不做幂等。资金操作原则上都该有幂等键。
+	IdemKey string
+	Payload []byte
+	Entries []*ledger.Entry
+	KV      map[string][]byte
+	// Op 用于指标打标。
+	Op string
+}
+
+// commitDone 是提交完成后的回调，在 Actor goroutine 内执行。
+type commitDone func(res *store.CommitResult, err error)
+
+// commit 执行一次带幂等与流水的原子提交（L0）。
+//
+// 期间玩家被标记 busy，其余请求排队 —— 这是「Redis 未确认前内存不变」的实现方式。
+func (s *Shard) commit(p *Player, spec CommitSpec, done commitDone) {
+	entries, err := ledger.Encode(spec.Entries)
+	if err != nil {
+		done(nil, err)
+		return
+	}
+
+	req := &store.CommitReq{
+		Shard:        s.o.Shard,
+		Epoch:        s.o.Epoch,
+		IdemKey:      spec.IdemKey,
+		IdemTTLSec:   int64(s.lob.orderTTL.Seconds()),
+		IdemPayload:  spec.Payload,
+		LedgerKey:    s.lob.node.Keys.Ledger(p.UID),
+		LedgerMaxLen: ledger.DefaultMaxLen,
+		Entries:      entries,
+		KV:           spec.KV,
+	}
+
+	p.busy = true
+	uid := p.UID
+	sh := s.o.Shard
+	fencer := s.svc.Fencer()
+	rt := s.svc.Runtime()
+	op := spec.Op
+	if op == "" {
+		op = "commit"
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		res, cerr := fencer.Commit(ctx, req)
+		metrics.WriteThrough.WithLabelValues(op).Observe(time.Since(start).Seconds())
+		if cerr == nil {
+			metrics.LedgerEntries.Add(float64(len(entries)))
+		}
+
+		_ = rt.Do(sh, func() {
+			if pl, ok := s.players[uid]; ok {
+				pl.busy = false
+			}
+			done(res, cerr)
+			if errors.Is(cerr, store.ErrFenced) {
+				// 提交被 fencing 拒绝：整个分片都已过期，丢弃内存并停止服务。
+				s.svc.Claimer().Fence(sh)
+				return
+			}
+			s.drainWaiters(uid)
+		})
+	}()
+}
+
 // writeThroughDone 是写穿完成后的回调，在 Actor goroutine 内执行。
 type writeThroughDone func(res *store.WriteThroughResult, err error)
 
-// writeThrough 执行 L0 写穿：同步落 Redis 成功后才改内存回包（§6.2）。
+// writeThrough 是不带流水的 L0 写穿，仅用于非资金类的幂等操作。
 //
-// 期间玩家被标记 busy，其余请求排队，保证 Redis 未确认前内存不被改动。
+// 资金类一律走 commit：没有流水的资金变动是查不清的（评审 P1-2）。
 func (s *Shard) writeThrough(p *Player, orderKey string, payload []byte,
 	kv map[string][]byte, done writeThroughDone) {
 
@@ -547,7 +684,7 @@ func (s *Shard) writeThrough(p *Player, orderKey string, payload []byte,
 
 		start := time.Now()
 		res, err := fencer.WriteThrough(ctx, sh, epoch, orderKey, ttl, payload, kv)
-		metrics.WriteThrough.WithLabelValues("purchase").Observe(time.Since(start).Seconds())
+		metrics.WriteThrough.WithLabelValues("write_through").Observe(time.Since(start).Seconds())
 
 		_ = rt.Do(sh, func() {
 			if pl, ok := s.players[uid]; ok {
@@ -555,11 +692,52 @@ func (s *Shard) writeThrough(p *Player, orderKey string, payload []byte,
 			}
 			done(res, err)
 			if errors.Is(err, store.ErrFenced) {
-				// 写穿被 fencing 拒绝：整个分片都已过期。
 				s.svc.Claimer().Fence(sh)
 				return
 			}
 			s.drainWaiters(uid)
 		})
 	}()
+}
+
+// kvOf 把玩家的若干模块序列化成提交用的 key→value。
+//
+// 必须在 Actor goroutine 内调用（读内存），这是 §6.3 的硬要求。
+func (s *Shard) kvOf(p *Player, mods ...store.Module) (map[string][]byte, error) {
+	return p.MarshalKeys(s.lob.node.Keys, mods)
+}
+
+// appendLedger 追加一条流水到异步刷盘路径。
+//
+// 只用于「非资金关键路径」的补记（例如内部发放的货币变动）：
+// 资金关键路径（下注、充值、派彩）必须走 commit，与余额同一个 Lua 原子写入。
+// 这里的写入是 best-effort 的，失败会记日志。
+func (s *Shard) appendLedger(p *Player, e *ledger.Entry) {
+	blob, err := e.JSON()
+	if err != nil {
+		return
+	}
+	key := s.lob.node.Keys.Ledger(p.UID)
+	rdb := s.lob.node.Redis
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := rdb.XAdd(ctx, &redis.XAddArgs{
+			Stream: key,
+			MaxLen: ledger.DefaultMaxLen,
+			Approx: true,
+			Values: map[string]any{ledger.StreamField: blob},
+		}).Err(); err != nil {
+			logx.Error("追加流水失败（告警：该笔资金变动将无法追溯）",
+				"uid", p.UID, "type", e.Type, "err", err)
+		}
+	}()
+}
+
+// appendItemLedger 记录道具类资产变动。
+//
+// 道具没有「余额」概念，因此 amount/balance 留 0，数量记在 ref 里。
+func (s *Shard) appendItemLedger(p *Player, t ledger.Type, tpl uint32, count int64, reason string) {
+	s.appendLedger(p, s.entry(p.UID, t, 0, 0, 0).
+		WithRef(fmt.Sprintf("tpl=%d;count=%d;reason=%s", tpl, count, reason)))
 }

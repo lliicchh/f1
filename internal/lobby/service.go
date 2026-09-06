@@ -9,10 +9,15 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"google.golang.org/protobuf/proto"
 
+	"github.com/gamedev/f1/pkg/authz"
 	"github.com/gamedev/f1/pkg/bus"
+	"github.com/gamedev/f1/pkg/gameconf"
+	"github.com/gamedev/f1/pkg/jackpot"
+	"github.com/gamedev/f1/pkg/ledger"
 	"github.com/gamedev/f1/pkg/logx"
 	"github.com/gamedev/f1/pkg/metrics"
 	"github.com/gamedev/f1/pkg/node"
+	"github.com/gamedev/f1/pkg/payment"
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/profile"
 	"github.com/gamedev/f1/pkg/protocol"
@@ -35,6 +40,17 @@ type Service struct {
 	profiles *profile.Reader
 	sessions *session.Store
 	js       *bus.JS
+
+	// conf 是热可替换的游戏配置（评审 P1-3）。
+	conf *gameconf.Store
+	// jackpot 管理累积奖池（评审 P1-5）。
+	jackpot *jackpot.Manager
+	// ledger 读取资金流水，供 GM 查询与对账（评审 P1-2）。
+	ledger *ledger.Reader
+	// signer 校验内部 / GM 命令的签名（评审 P0-1）。
+	signer *authz.Signer
+	// payment 校验充值回执（评审 P0-2）。
+	payment payment.Verifier
 
 	consumers []jetstream.ConsumeContext
 	orderTTL  time.Duration
@@ -80,6 +96,28 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	s.profiles = profile.NewReader(n.Redis, n.Keys)
 	s.sessions = session.NewStore(n.Redis, n.Keys, n.Cfg.SessionTTL)
 	s.txm = xtx.NewManager(n.Redis, n.Keys, 7*24*time.Hour, 30*24*time.Hour)
+	s.ledger = ledger.NewReader(n.Redis, n.Keys)
+	s.signer = authz.NewSigner(n.Cfg.InternalSecret)
+
+	conf, err := gameconf.Load(n.Cfg.GameConfPath)
+	if err != nil {
+		return fmt.Errorf("加载游戏配置失败: %w", err)
+	}
+	s.conf = gameconf.NewStore(conf)
+	s.jackpot = jackpot.NewManager(n.Redis, n.Keys, conf.Jackpots)
+	metrics.ConfigVersion.WithLabelValues(conf.Version()).Set(1)
+	logx.Info("游戏配置已加载",
+		"version", conf.Version(), "path", n.Cfg.GameConfPath,
+		"machines", len(conf.Slots), "pools", len(conf.Gacha))
+
+	s.payment = payment.New(n.Cfg.PaymentSecret, n.Cfg.PaymentSandbox)
+	if !s.payment.Strict() {
+		logx.Error("支付校验处于沙箱模式（告警）：仅限本地开发，生产必须配置 PAYMENT_SECRET")
+	}
+	if !s.signer.HasSecret() {
+		logx.Error("未配置 INTERNAL_SECRET（告警）：本进程无法签发内部命令，" +
+			"发奖 / 结算 / 跨分片入账都会失败")
+	}
 
 	s.shards = shardsvc.New(shardsvc.Options{
 		Kind: shard.KindLobby,
@@ -97,9 +135,9 @@ func (s *Service) Start(ctx context.Context, n *node.Node) error {
 	}
 
 	// job.* 必达任务：跨分片转移与发信（§5.2 / §8）。
-	js, err := n.Bus.NewJetStream(ctx)
-	if err != nil {
-		return fmt.Errorf("初始化 JetStream 失败: %w", err)
+	js, jerr := n.Bus.NewJetStream(ctx)
+	if jerr != nil {
+		return fmt.Errorf("初始化 JetStream 失败: %w", jerr)
 	}
 	s.js = js
 
@@ -236,8 +274,10 @@ func (s *Service) forward(jm *bus.JobMsg, toUID uint64, cmd protocol.Cmd, body p
 		subj := subject.LobbyReq(sh, cmd.Name())
 		traceID := jm.Env.GetTraceId()
 
+		// 转发的是内部命令（apply_transfer / apply_mail / battle_settle），
+		// 必须带内部签名，否则会被目标分片的第二道鉴权拒掉。
 		var ack pb.Ack
-		err := s.node.Bus.Call(ctx, subj, cmd, toUID, traceID, body, &ack)
+		err := s.internalCall(ctx, subj, cmd, toUID, traceID, body, &ack)
 		if err == nil {
 			_ = jm.Ack()
 			return
@@ -454,3 +494,177 @@ var (
 	_              = errors.Is
 	_              = store.L1
 )
+
+// ---------------------------------------------------------------------------
+// 配置 / 奖池 / 内部命令
+// ---------------------------------------------------------------------------
+
+// Conf 返回当前生效的游戏配置。
+func (s *Service) Conf() *gameconf.Config { return s.conf.Get() }
+
+// ReloadConf 热替换游戏配置。校验不过则保持原配置不动。
+//
+// 版本随每个回合落盘：热更之后开的局记新版本，已经开着的局仍记旧版本，
+// 复算时各取各的，不会串。
+func (s *Service) ReloadConf(path string) error {
+	c, err := gameconf.Load(path)
+	if err != nil {
+		return err
+	}
+	old := s.conf.Get().Version()
+	if err := s.conf.Replace(c); err != nil {
+		return err
+	}
+	metrics.ConfigVersion.Reset()
+	metrics.ConfigVersion.WithLabelValues(c.Version()).Set(1)
+	logx.Info("游戏配置已热替换", "from", old, "to", c.Version())
+	return nil
+}
+
+// Ledger 返回流水读取器。
+func (s *Service) Ledger() *ledger.Reader { return s.ledger }
+
+// Signer 返回内部命令签名器。
+func (s *Service) Signer() *authz.Signer { return s.signer }
+
+// Jackpot 返回奖池管理器。
+func (s *Service) Jackpot() *jackpot.Manager { return s.jackpot }
+
+// contributeJackpot 往奖池注入。
+//
+// best-effort：失败只会让池子少涨。玩家那份钱已经原子扣掉并记了 JP_CONTRIB 流水，
+// 因此差额可以按流水对账补回 —— 这是「先保证玩家侧正确，再保证池子侧正确」的取舍。
+func (s *Service) contributeJackpot(pool string, amount int64) {
+	if s.jackpot == nil || amount <= 0 {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		total, err := s.jackpot.Contribute(ctx, pool, amount)
+		if err != nil {
+			logx.Error("奖池注入失败（告警：需按 JP_CONTRIB 流水对账补回）",
+				"pool", pool, "amount", amount, "err", err)
+			return
+		}
+		metrics.JackpotAmount.WithLabelValues(pool).Set(float64(total))
+	}()
+}
+
+// claimJackpot 处理中奖：原子清池 + 落 PENDING 记录，再把派彩交给中转层。
+func (s *Service) claimJackpot(pool string, uid, roundID uint64, traceID string) {
+	if s.jackpot == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		sf, err := s.node.NextID()
+		if err != nil {
+			logx.Trace(traceID).Error("生成奖池 txid 失败", "err", err)
+			return
+		}
+		txid := fmt.Sprintf("jp%d", sf)
+
+		payout, err := s.jackpot.Claim(ctx, pool, uid, roundID, txid)
+		if err != nil {
+			if errors.Is(err, jackpot.ErrEmpty) {
+				logx.Trace(traceID).Info("中奖但奖池已空", "pool", pool, "uid", uid)
+				return
+			}
+			logx.Trace(traceID).Error("奖池清算失败", "pool", pool, "uid", uid, "err", err)
+			return
+		}
+
+		metrics.JackpotWins.WithLabelValues(pool).Inc()
+		metrics.JackpotAmount.WithLabelValues(pool).Set(0)
+		logx.Trace(traceID).Info("奖池中奖",
+			"pool", pool, "uid", uid, "amount", payout.Amount, "txid", txid)
+
+		if err := s.deliverJackpot(ctx, payout, traceID); err != nil {
+			// 派彩没送到不要紧：PENDING 记录还在，补偿扫描会重投。
+			logx.Trace(traceID).Error("奖池派彩投递失败，等待补偿扫描重投",
+				"txid", txid, "err", err)
+			return
+		}
+		if err := s.jackpot.Settle(ctx, payout); err != nil {
+			logx.Trace(traceID).Warn("标记奖池派彩完成失败（下轮扫描会重投，幂等安全）",
+				"txid", txid, "err", err)
+		}
+		_ = s.Broadcast(protocol.PushJackpotWon,
+			&pb.JackpotInfoResp{PoolId: pool, Amount: payout.Amount}, traceID)
+	}()
+}
+
+// deliverJackpot 把奖池派彩打给玩家所在分片。幂等由 txid 保证。
+func (s *Service) deliverJackpot(ctx context.Context, p *jackpot.Payout, traceID string) error {
+	sh := s.ShardOf(p.UID)
+	req := &pb.JackpotClaimReq{
+		PoolId: p.PoolID, Uid: p.UID, Txid: p.TxID,
+		Amount: p.Amount, RoundId: p.RoundID,
+	}
+	var resp pb.JackpotClaimResp
+	return s.internalCall(ctx, subject.LobbyReq(sh, protocol.CmdApplyJackpot.Name()),
+		protocol.CmdApplyJackpot, p.UID, traceID, req, &resp)
+}
+
+// scanJackpotPayouts 重投超时未完成的奖池派彩。
+//
+// 与 §8 的跨分片补偿是同一个模式：PENDING 索引 + 定期重投 + 接收方幂等。
+func (s *Service) scanJackpotPayouts() {
+	if s.jackpot == nil {
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		for poolID := range s.conf.Get().Jackpots {
+			before := time.Now().Add(-s.node.Cfg.TxTimeout)
+			pending, err := s.jackpot.PendingPayouts(ctx, poolID, before, 50)
+			if err != nil {
+				logx.Warn("扫描奖池待派彩失败", "pool", poolID, "err", err)
+				continue
+			}
+			metrics.JackpotPending.WithLabelValues(poolID).Set(float64(len(pending)))
+			for _, p := range pending {
+				if err := s.deliverJackpot(ctx, p, "jp-rescan"); err != nil {
+					logx.Warn("重投奖池派彩失败", "txid", p.TxID, "err", err)
+					_ = s.jackpot.Requeue(ctx, p)
+					continue
+				}
+				if err := s.jackpot.Settle(ctx, p); err != nil {
+					logx.Warn("标记奖池派彩完成失败", "txid", p.TxID, "err", err)
+				}
+			}
+		}
+	}()
+}
+
+// internalCall 发起一条带签名的内部命令。
+//
+// 没有内部密钥时直接失败，而不是发一条没签名的命令碰运气 ——
+// 后者会在对端被拒，错误却发生在很远的地方，排查成本高得多。
+func (s *Service) internalCall(ctx context.Context, subj string, cmd protocol.Cmd,
+	uid uint64, traceID string, body, out proto.Message) error {
+
+	env, err := s.node.Bus.NewEnvelope(cmd, uid, traceID, body)
+	if err != nil {
+		return err
+	}
+	if err := s.signer.Sign(env); err != nil {
+		return err
+	}
+	resp, err := s.node.Bus.RequestEnv(ctx, subj, env)
+	if err != nil {
+		return err
+	}
+	if resp.GetErrCode() != 0 {
+		return &bus.RemoteError{Code: protocol.ErrCode(resp.GetErrCode()), Msg: resp.GetErrMsg()}
+	}
+	if out != nil {
+		return bus.Unpack(resp, out)
+	}
+	return nil
+}

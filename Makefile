@@ -44,6 +44,29 @@ build:
 		echo "building $$s"; \
 		$(GO) build $(GOFLAGS) -o bin/$$s ./cmd/$$s || exit 1; \
 	done
+	@$(GO) build $(GOFLAGS) -o bin/gameconfctl ./cmd/gameconfctl
+
+# ---- 游戏配置（评审 P1-3 / P1-4）----
+
+# 导出内置默认配置。
+.PHONY: conf-dump
+conf-dump: build
+	./bin/gameconfctl dump -o deploy/game.json
+
+# 校验配置并打印版本号。发布前必跑。
+.PHONY: conf-lint
+conf-lint: build
+	./bin/gameconfctl lint -f deploy/game.json
+
+# 蒙特卡洛实测 RTP。数学模型改动后必跑，偏差超过 0.5% 会以非零码退出。
+.PHONY: rtp
+rtp: build
+	./bin/gameconfctl rtp -f deploy/game.json -n 5000000
+
+# 只跑 slots 的数学回归（比全量测试快得多，适合改数值时反复跑）。
+.PHONY: test-rtp
+test-rtp:
+	$(GO) test -count=1 -run "TestRTP" -rtp.spins=5000000 ./internal/slots/ -v
 
 # 生成 protobuf。需要 protoc 与 protoc-gen-go。
 .PHONY: proto

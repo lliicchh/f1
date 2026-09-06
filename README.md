@@ -1,7 +1,11 @@
-# 游戏服务器（game-server-design v0.3 实现）
+# 游戏服务器（slots + RPG）
 
-按 [`game-server-design-v3.md`](game-server-design-v3.md) 实现的分区分服游戏服务器。
+按 [`game-server-design-v3.md`](game-server-design-v3.md) 实现的分区分服游戏服务器，
+并按 [`REVIEW.md`](REVIEW.md) 的评审结论补齐了 slots 品类所需的安全与合规能力。
 技术栈：Go / NATS / Redis / etcd / Docker Compose。
+
+> 先读 [`REVIEW.md`](REVIEW.md)：它说明了为什么同一份架构代码，
+> 放到 slots 品类下风险等级完全不同，以及本仓库据此做了哪些改动。
 
 两条设计取向贯穿全部代码，读代码前先记住它们：
 
@@ -35,6 +39,14 @@ cmd/                    六个服务的入口，每个只有十几行
   gateway/ lobby/ room/ match/ chat/ world/
 
 pkg/                    与业务无关的基础设施
+  authz/       P0-1 命令权限分级与内部命令签名
+  authn/       P0-3 登录票据校验
+  payment/     P0-2 充值回执验签
+  rng/         P0-4 可审计、可复现的随机数源
+  gameconf/    P1-3 配置表 + 内容哈希版本
+  ledger/      P1-2 资金流水账本
+  jackpot/     P1-5 累积奖池
+  rg/          P1-6 责任游戏限额
   ident/       §3   三层 ID 结构、nodeID / workerID 派生、越界校验
   idgen/       §3.5 雪花发号、时钟回拨处理
   nodeid/      §3.4 nodeID 的 etcd 唯一性自检与心跳
@@ -54,7 +66,11 @@ pkg/                    与业务无关的基础设施
   logx/             结构化日志
 
 internal/               各服务的业务实现
-  lobby/ room/ gateway/ match/ chat/ world/
+  slots/              老虎机数学引擎（纯函数，可复算）
+  lobby/              玩家对象 + slots/抽卡/充值/GM 逻辑
+  room/ gateway/ match/ chat/ world/
+
+cmd/gameconfctl/        配置表运维工具：dump / lint / rtp
 
 test/
   harness/            进程内 etcd + NATS + Redis
@@ -101,6 +117,50 @@ deploy/                 各区服的 env 文件
 | §11 部署 | `docker-compose.yml` / `deploy/*.env` | YAML 锚点、不使用 replicas、`stop_grace_period: 60s` |
 | §13 故障处理 | 见下方「故障行为」 | |
 | §14 监控指标 | `pkg/metrics` | 三个「必须告警」的指标同时打 Error 日志 |
+
+---
+
+## slots 相关的实现要点
+
+这一节对应 [`REVIEW.md`](REVIEW.md) 的修改清单。
+
+**命令权限分级（P0-1）。**
+每个命令在 `pkg/protocol` 的定义处标注 `Client / Internal / GM`，
+**未登记的命令默认落到最严的 Internal** —— 漏配的后果是「调不通」而不是「被刷钱」。
+两道校验：网关只放行 Client 级；Lobby 再验一次 HMAC 签名。
+第二道存在的理由是不信任网关 —— 部署时网关**不持有** `INTERNAL_SECRET`
+（见 `deploy/gateway.env`），因此它在物理上签不出一条合法的内部命令。
+
+**一次 spin 的四个步骤，顺序不可打乱**（`internal/lobby/slots.go`）：
+
+```
+1. 拒绝性检查（限额、档位、回合冲突）  —— 拒绝不产生任何副作用
+2. 在副本上算结果                      —— 内存此时未被改动
+3. 一次原子提交                        —— 余额 + 回合 + 限额 + 流水，同生共死
+4. 提交成功后才改内存、才回包
+```
+
+**流水与余额必须在同一个 Lua 里写入**（`pkg/store` 的 `scriptCommit`）。
+分两步写一定会出现「扣了钱没流水」或「有流水没扣钱」，
+而这两种情况事后无法区分是 bug 还是欺诈。
+
+**回合可中断、可恢复、可复算。**
+未结算回合随投注原子落盘，登录时由 `LoginResp.open_round` 带回；
+回合里记着 `seed_hex` 与 `config_version`，
+`slots.Replay` 能凭这两样重放出位对位一致的结果 —— 这是客服查单与监管抽查的入口。
+
+**免费旋转与主旋转共用一条随机流。**
+代价是每次免费旋转要把前面几次重放一遍（纯内存，开销可忽略），
+换来的是「一颗种子重放整局」这个性质 —— 分成两条流就复算不了了。
+
+**奖池不做成分布式事务。**
+注入用 Redis `INCRBY`（本来就是原子的）；
+中奖时原子地「清零 + 落 PENDING 派彩记录」，再由 §8 的中转层幂等打给玩家。
+「每次 spin 发个 job 给 World 累加」是常见的过度设计，既慢又多一个失败点。
+
+**RTP 由测试守着。**
+`make rtp` 或 `make test-rtp` 跑蒙特卡洛，实测偏离配置值 0.5% 以上即失败。
+轴带改错一个符号，RTP 可能从 96% 跳到 130%，这种错误必须在 CI 拦住。
 
 ---
 
@@ -162,6 +222,13 @@ Cluster 部署要改成 `shard`，让 epoch 键与该分片下所有玩家键落
 不需要 Docker。设计文档把 P1、P2 列为地基，测试也压在那里：
 
 ```
+pkg/authz        造币类命令绝不能是客户端级、签名绑定 cmd/uid/时效、无密钥签不出
+pkg/authn        无效/过期/张冠李戴的登录票据必须被拒
+pkg/payment      未配置时默认拒绝；换单号/换 uid/换商品/改价的回执都要被识破
+pkg/rng          同种子可复现、不同种子必不同
+pkg/gameconf     版本是内容哈希、非法配置被拦下、热替换失败不影响现有配置
+pkg/rg           日投注/日亏损/会话时长/自我排除、跨日按配置时区重置、玩家限额只能更严
+internal/slots   RTP 蒙特卡洛回归、重放确定性、连线规则、免费旋转不参与奖池
 pkg/ident        workerID 全服务唯一性、越界溢出会撞车的反证
 pkg/idgen        并发唯一性、小回拨自旋、大回拨停止发号、序列号溢出
 pkg/store        epoch fencing 拒绝陈旧 owner、L0 幂等、刷盘失败必须回报
@@ -182,20 +249,62 @@ test/integration
   网关            TCP 端到端登录、路由、顶号、未登录拒绝
   全链路          匹配 → 建房 → 开打 → 结算 → 发奖回到 Lobby
   世界服          选主后唯一实例对外服务
+
+  —— 以下对应 REVIEW.md 的验收标准 ——
+  客户端越权      add_currency / add_item / apply_* / gm_* 一律被拒，且确认没到账
+  伪造签名        错误密钥、无签名、缺 operator 的内部命令都被拒
+  登录认证        空票据 / 乱填 / 别人的票据都被拒
+  spin 原子性     扣款、派彩、流水三者一致，流水求和 == 当前余额
+  spin 幂等       重发同一次 spin 不重复扣费，返回首次结果
+  未完成回合      免费旋转中途重启进程，重连后取回并打完，期间不扣费
+  责任游戏        触发日限额后拒绝下注；自我排除期内拒绝登录与下注
+  奖池            并发注入总额守恒；中奖清零只发生一次且必留派彩记录
+  抽卡保底        保底周期内必出最高稀有度；十连必出高稀有度；消耗与产出都有流水
+  充值            未知商品 / 无效回执 / 未授权渠道都被拒，且一分钱不到账
+  GM              补单幂等、留下带操作者的流水、缺 operator 直接拒绝
 ```
 
 ---
 
 ## 运维必须确认的事
 
+0. **三把密钥必须改掉，且网关不能拿到 `INTERNAL_SECRET`。**
+   `deploy/s1.env` 里的 `CHANGE-ME-*` 是占位值。
+   网关通过 `deploy/gateway.env` 把内部密钥覆盖成空 —— 这不是可选项，
+   它是「网关被攻破也签不出内部命令」这一保证的物理基础。
+   未配置 `LOGIN_SECRET` 且未显式设 `ALLOW_DEV_AUTH=true` 时，**所有登录都会被拒绝**（有意如此）。
+   未配置 `PAYMENT_SECRET` 且未开沙箱时，**所有充值都会被拒绝**（同样有意）。
 1. **Redis `maxmemory-policy` 必须是 `noeviction`。** 服务启动时会校验，不满足直接拒绝启动
    （要放行需显式设 `REDIS_REQUIRE_NOEVICTION=false`，但那意味着接受静默丢档的风险）。
 2. **NTP 必须用 slew 模式**（chrony 配 `maxslewrate`，或 ntpd 加 `-x`）。
    默认配置在偏差大时会直接 step，那会触发发号停止。
 3. **`stop_grace_period` 要给够。** 默认 10s 会在优雅下线刷盘途中 SIGKILL；
    compose 里已设 60s，`SHUTDOWN_GRACE` 相应设为 55s，按实际分片数与数据量调整。
-4. **告警必须接这三个指标**（非零即有事）：
-   `game_shard_epoch_rejected_total`、`game_nats_slow_consumer_total`、`game_id_clock_backwards_total`。
+4. **告警必须接这几个指标**（非零即有事）：
+   `game_shard_epoch_rejected_total`、`game_nats_slow_consumer_total`、
+   `game_id_clock_backwards_total`、`game_authz_rejected_total`。
+5. **RTP 要接监控大盘**：
+   `game_slots_win_amount_total / game_slots_bet_amount_total`（按 `game` 与 `config_version` 分组），
+   与配置的理论 RTP 做偏差告警。RTP 异常是配置错误或作弊的第一信号。
+6. **`game_slots_jackpot_pending` 长期非零说明奖池派彩链路卡住了**，钱在半路上。
+7. **账本是过渡方案。** 流水目前写在 Redis Stream（每玩家保留约 2000 条）。
+   真钱上线前必须把它导出到不可篡改的长期存储 —— Redis 可被 FLUSH，不是审计级存储。
+
+---
+
+## 评审中已知但本次未做的事
+
+诚实列出来，避免给人「都做完了」的错觉：
+
+- **账本长期存储**。当前只有 Redis Stream + 导出接口，没有实际的导出目标。
+- **group commit（P2-1）**。每笔 L0 仍是一次独立的 Redis 往返。
+  10 万在线、3 秒一次 spin ≈ 33k 次/秒同步 Lua，单 Redis 会吃紧；
+  同分片攒批可提升一个数量级，代价是几毫秒延迟。
+- **TLS（P2-3）**。网关仍是明文 TCP，需在部署层加 TLS 终结。
+- **多币种与精度（P2-5）**。金额已统一用 int64 最小单位（绝不用浮点），
+  但汇率、分币种限额还没做。
+- **NATS 账号隔离（P2-7）**。内部命令签名已能挡住伪造，
+  但生产仍应给 NATS 配账号，限制谁能往 `req.lobby.*` 发消息。
 
 ---
 

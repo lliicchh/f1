@@ -11,7 +11,9 @@ import (
 	"github.com/gamedev/f1/internal/lobby"
 	"github.com/gamedev/f1/pkg/bus"
 	"github.com/gamedev/f1/pkg/config"
+	"github.com/gamedev/f1/pkg/gameconf"
 	"github.com/gamedev/f1/pkg/node"
+	"github.com/gamedev/f1/pkg/payment"
 	"github.com/gamedev/f1/pkg/pb"
 	"github.com/gamedev/f1/pkg/profile"
 	"github.com/gamedev/f1/pkg/protocol"
@@ -48,6 +50,36 @@ func startLobby(t *testing.T, env *harness.Env, seq int) (*node.Node, *lobby.Ser
 		svc.Close(sctx)
 	})
 	return n, svc
+}
+
+// grant 通过内部签名通道给玩家发钱。
+//
+// 客户端已经**不能**再调用 add_currency（评审 P0-1 修复后它是内部命令），
+// 因此测试也必须走与发奖服务相同的路径。
+func grant(t *testing.T, n *node.Node, uid uint64, currency uint32, amount int64) int64 {
+	t.Helper()
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+	var resp pb.AddCurrencyResp
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := harness.InternalCall(ctx, t, n,
+			subject.LobbyReq(sh, protocol.CmdAddCurrency.Name()),
+			protocol.CmdAddCurrency, uid, "", &pb.AddCurrencyReq{
+				Currency: currency, Delta: amount, Reason: "test",
+			}, &resp)
+		cancel()
+		if err == nil {
+			return resp.GetBalance()
+		}
+		lastErr = err
+		if !retryable(err) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("发放货币失败: %v", lastErr)
+	return 0
 }
 
 // lobbyCall 带重试地调用 Lobby。
@@ -106,20 +138,19 @@ func TestLobbyLoginAndFlush(t *testing.T) {
 		t.Fatalf("新玩家等级应为 1，实际 %d", resp.GetBase().GetLevel())
 	}
 
-	var cur pb.AddCurrencyResp
-	if err := lobbyCall(t, n, uid, protocol.CmdAddCurrency,
-		&pb.AddCurrencyReq{Currency: uint32(protocol.CurrencyGold), Delta: 500, Reason: "test"}, &cur); err != nil {
-		t.Fatalf("加钱失败: %v", err)
-	}
-	if cur.GetBalance() != 500 {
-		t.Fatalf("余额 = %d，期望 500", cur.GetBalance())
+	if bal := grant(t, n, uid, uint32(protocol.CurrencyGold), 500); bal != 500 {
+		t.Fatalf("余额 = %d，期望 500", bal)
 	}
 
 	var add pb.AddItemResp
-	if err := lobbyCall(t, n, uid, protocol.CmdAddItem,
-		&pb.AddItemReq{TplId: 100, Count: 3}, &add); err != nil {
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+	ictx, icancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := harness.InternalCall(ictx, t, n,
+		subject.LobbyReq(sh, protocol.CmdAddItem.Name()),
+		protocol.CmdAddItem, uid, "", &pb.AddItemReq{TplId: 100, Count: 3}, &add); err != nil {
 		t.Fatalf("加道具失败: %v", err)
 	}
+	icancel()
 	if add.GetItem().GetInstanceId() == 0 {
 		t.Fatal("道具实例 ID 应由雪花生成")
 	}
@@ -170,11 +201,7 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	var first pb.PurchaseResp
-	if err := lobbyCall(t, n, uid, protocol.CmdPurchase,
-		&pb.PurchaseReq{OrderId: "order-42", Product: 1}, &first); err != nil {
-		t.Fatalf("首次充值失败: %v", err)
-	}
+	first := purchase(t, n, uid, "order-42", 1)
 	if first.GetDuplicate() {
 		t.Fatal("首次充值不应判为重复")
 	}
@@ -183,11 +210,7 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 	}
 
 	// 客户端重试同一订单。
-	var second pb.PurchaseResp
-	if err := lobbyCall(t, n, uid, protocol.CmdPurchase,
-		&pb.PurchaseReq{OrderId: "order-42", Product: 1}, &second); err != nil {
-		t.Fatalf("重复充值请求本身不应报错: %v", err)
-	}
+	second := purchase(t, n, uid, "order-42", 1)
 	if !second.GetDuplicate() {
 		t.Fatal("重复订单必须被识别")
 	}
@@ -197,11 +220,7 @@ func TestLobbyPurchaseIdempotent(t *testing.T) {
 	}
 
 	// 换个订单号才会真正再次到账。
-	var third pb.PurchaseResp
-	if err := lobbyCall(t, n, uid, protocol.CmdPurchase,
-		&pb.PurchaseReq{OrderId: "order-43", Product: 1}, &third); err != nil {
-		t.Fatal(err)
-	}
+	third := purchase(t, n, uid, "order-43", 1)
 	if third.GetBalance() != 120 {
 		t.Fatalf("第二笔订单后余额 = %d，期望 120", third.GetBalance())
 	}
@@ -235,11 +254,8 @@ func TestCrossShardTransferEndToEnd(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// 给发起方发点货。
-	if err := lobbyCall(t, n, from, protocol.CmdAddItem,
-		&pb.AddItemReq{TplId: 100, Count: 10}, &pb.AddItemResp{}); err != nil {
-		t.Fatal(err)
-	}
+	// 给发起方发点货（走内部通道）。
+	grantItem(t, n, from, 100, 10)
 
 	if err := lobbyCall(t, n, from, protocol.CmdTransfer, &pb.TransferJob{
 		ToUid:  to,
@@ -290,7 +306,7 @@ func TestTransferInsufficientIsAtomic(t *testing.T) {
 		&pb.LoginReq{Uid: from, GateId: "g1", ConnId: 1}, &pb.LoginResp{}); err != nil {
 		t.Fatal(err)
 	}
-	_ = lobbyCall(t, n, from, protocol.CmdAddItem, &pb.AddItemReq{TplId: 100, Count: 2}, &pb.AddItemResp{})
+	grantItem(t, n, from, 100, 2)
 
 	err := lobbyCall(t, n, from, protocol.CmdTransfer, &pb.TransferJob{
 		ToUid: to,
@@ -334,4 +350,62 @@ func countTpl(bag *pb.PlayerBag, tpl uint32) int64 {
 		}
 	}
 	return n
+}
+
+// grantItem 通过内部通道发放道具。
+func grantItem(t *testing.T, n *node.Node, uid uint64, tpl uint32, count int64) {
+	t.Helper()
+	sh := shard.Of(uid, n.Cfg.ShardCount)
+	var resp pb.AddItemResp
+	var lastErr error
+	for i := 0; i < 20; i++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := harness.InternalCall(ctx, t, n,
+			subject.LobbyReq(sh, protocol.CmdAddItem.Name()),
+			protocol.CmdAddItem, uid, "", &pb.AddItemReq{TplId: tpl, Count: count}, &resp)
+		cancel()
+		if err == nil {
+			return
+		}
+		lastErr = err
+		if !retryable(err) {
+			break
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	t.Fatalf("发放道具失败: %v", lastErr)
+}
+
+// purchase 走完整的充值路径：配置商品 + 渠道回执验签。
+func purchase(t *testing.T, n *node.Node, uid uint64, orderID string, product uint32) *pb.PurchaseResp {
+	t.Helper()
+	conf := gameconfProduct(t, product)
+	order := payment.Order{
+		OrderID: orderID, UID: uid, ProductID: product,
+		Channel: "sandbox", PriceCents: conf,
+	}
+	sig := payment.Sign(harness.TestPaymentSecret, order)
+
+	var resp pb.PurchaseResp
+	if err := lobbyCall(t, n, uid, protocol.CmdPurchase, &pb.PurchaseReq{
+		OrderId: orderID,
+		Product: product,
+		Receipt: &pb.PurchaseReceipt{
+			Channel: "sandbox", Receipt: "rcpt-" + orderID, Signature: sig,
+		},
+	}, &resp); err != nil {
+		t.Fatalf("充值失败: %v", err)
+	}
+	return &resp
+}
+
+// gameconfProduct 返回商品定价，用于构造回执签名。
+func gameconfProduct(t *testing.T, id uint32) int64 {
+	t.Helper()
+	c := gameconf.Default()
+	p, ok := c.Product(id)
+	if !ok {
+		t.Fatalf("配置里没有商品 %d", id)
+	}
+	return p.PriceCents
 }

@@ -319,3 +319,133 @@ func (f *Fencer) reportFenced(shard uint32, epoch int64) {
 		"kind", f.kind, "shard", shard, "my_epoch", epoch,
 		"action", "必须丢弃该分片内存、停止服务、告警，绝不重试")
 }
+
+// ---------------------------------------------------------------------------
+// 统一提交：幂等 + 流水 + 数据，一次 Lua 原子完成
+// ---------------------------------------------------------------------------
+
+// scriptCommit 是资金类操作的统一入口。
+//
+//	KEYS[1]    = epoch 键
+//	KEYS[2]    = 幂等键（ARGV[2]==0 时不启用）
+//	KEYS[3]    = 流水 Stream 键
+//	KEYS[4..N] = 数据键
+//	ARGV[1]    = 调用方 epoch
+//	ARGV[2]    = 幂等 TTL 秒（0 = 不启用幂等）
+//	ARGV[3]    = 幂等载荷（重复提交时原样返回）
+//	ARGV[4]    = 流水保留条数（0 = 不裁剪）
+//	ARGV[5]    = 流水条数 E
+//	ARGV[6..5+E]   = E 条流水 JSON
+//	ARGV[6+E..]    = 对应 KEYS[4..] 的值
+//
+// 返回 {状态, 载荷}：1 首次执行 / 2 重复提交 / 0 epoch 过期。
+//
+// 把「幂等判定、流水追加、余额写入」放进同一个脚本，是为了让它们同生共死：
+// 任何一步没做，其余步骤都不会留下痕迹。这是资金正确性的地基。
+var scriptCommit = redis.NewScript(`
+local useIdem = tonumber(ARGV[2]) > 0
+if useIdem then
+  local existing = redis.call('GET', KEYS[2])
+  if existing then
+    return {2, existing}
+  end
+end
+if tonumber(redis.call('GET', KEYS[1]) or '0') > tonumber(ARGV[1]) then
+  return {0, ''}
+end
+if useIdem then
+  redis.call('SET', KEYS[2], ARGV[3], 'EX', tonumber(ARGV[2]))
+end
+local maxlen = tonumber(ARGV[4])
+local n = tonumber(ARGV[5])
+for i = 1, n do
+  if maxlen > 0 then
+    redis.call('XADD', KEYS[3], 'MAXLEN', '~', maxlen, '*', 'd', ARGV[5 + i])
+  else
+    redis.call('XADD', KEYS[3], '*', 'd', ARGV[5 + i])
+  end
+end
+for i = 4, #KEYS do
+  redis.call('SET', KEYS[i], ARGV[2 + n + i])
+end
+return {1, ARGV[3]}
+`)
+
+// CommitReq 描述一次资金类提交。
+type CommitReq struct {
+	Shard uint32
+	Epoch int64
+
+	// IdemKey 为空表示不做幂等（例如免费旋转的中途状态推进）。
+	IdemKey     string
+	IdemTTLSec  int64
+	IdemPayload []byte
+
+	// LedgerKey 是玩家流水 Stream；Entries 为空时不写流水。
+	LedgerKey    string
+	LedgerMaxLen int64
+	Entries      [][]byte
+
+	// KV 是要写入的玩家数据（已在 Actor 内序列化完成）。
+	KV map[string][]byte
+}
+
+// CommitResult 是提交结果。
+type CommitResult struct {
+	Duplicate bool
+	Payload   []byte
+}
+
+// Commit 执行一次带幂等与流水的原子写入。
+func (f *Fencer) Commit(ctx context.Context, req *CommitReq) (*CommitResult, error) {
+	if req.LedgerKey == "" && len(req.Entries) > 0 {
+		return nil, errors.New("store: 有流水条目但未指定 Stream 键")
+	}
+	ledgerKey := req.LedgerKey
+	if ledgerKey == "" {
+		// KEYS[3] 必须占位；Lua 在 E==0 时不会碰它。
+		ledgerKey = f.keys.Epoch(req.Shard)
+	}
+	idemKey := req.IdemKey
+	idemTTL := req.IdemTTLSec
+	if idemKey == "" {
+		idemKey = f.keys.Epoch(req.Shard) // 占位
+		idemTTL = 0
+	}
+
+	keys := make([]string, 0, len(req.KV)+3)
+	keys = append(keys, f.keys.Epoch(req.Shard), idemKey, ledgerKey)
+
+	args := make([]any, 0, len(req.KV)+len(req.Entries)+5)
+	args = append(args, req.Epoch, idemTTL, req.IdemPayload, req.LedgerMaxLen, len(req.Entries))
+	for _, e := range req.Entries {
+		args = append(args, e)
+	}
+	for k, v := range req.KV {
+		keys = append(keys, k)
+		args = append(args, v)
+	}
+
+	res, err := scriptCommit.Run(ctx, f.rdb, keys, args...).Slice()
+	if err != nil {
+		return nil, err
+	}
+	code, _ := res[0].(int64)
+	var payload []byte
+	switch v := res[1].(type) {
+	case string:
+		payload = []byte(v)
+	case []byte:
+		payload = v
+	}
+
+	switch code {
+	case 1:
+		return &CommitResult{Payload: payload}, nil
+	case 2:
+		return &CommitResult{Duplicate: true, Payload: payload}, nil
+	default:
+		f.reportFenced(req.Shard, req.Epoch)
+		return nil, fmt.Errorf("%w: shard=%d epoch=%d", ErrFenced, req.Shard, req.Epoch)
+	}
+}

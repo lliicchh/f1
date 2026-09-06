@@ -97,3 +97,33 @@ message Profile {
   uint64 power      = 6;
   int64  last_login = 7;
 }
+
+// PlayerRG 是责任游戏（Responsible Gaming）状态，随下注原子更新。
+//
+// 限额是合规要求，必须与扣款在同一个事务里推进 ——
+// 否则「扣了钱但没记进当日累计」会让限额形同虚设。
+message PlayerRG {
+  uint64 uid              = 1;
+  int64  daily_bet        = 2;  // 当日累计投注
+  int64  daily_win        = 3;  // 当日累计派彩
+  int64  day_start        = 4;  // 当前统计日的起点（按配置时区）
+  int64  daily_bet_limit  = 5;  // 0 = 用全局默认
+  int64  daily_loss_limit = 6;
+  int64  session_limit    = 7;
+  int64  session_start    = 8;
+  int64  excluded_until   = 9;  // 自我排除截止时间，期间禁止登录与下注
+  int64  last_notice_at   = 10;
+}
+
+message GachaPityState {
+  string pool_id     = 1;
+  uint32 since_top   = 2;  // 距上次出最高稀有度的抽数
+  uint32 since_high  = 3;  // 距上次出高稀有度的抽数
+  uint64 total_draws = 4;
+}
+
+// PlayerGacha 保存各卡池的保底计数。
+message PlayerGacha {
+  uint64 uid = 1;
+  repeated GachaPityState pools = 2;
+}

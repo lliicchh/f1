@@ -20,10 +20,24 @@ const (
 	ModQuest  Module = "quest"  // 任务              中频
 	ModSocial Module = "social" // 好友、公会         低频
 	ModMail   Module = "mail"   // 邮件              低频
+
+	// ModRound 是未结算的游戏回合。
+	//
+	// 它必须与投注同一次原子提交落盘：回合状态落后于扣款，
+	// 玩家断线重连就会「钱扣了但免费旋转没了」——
+	// 这在监管口径下属于 incomplete round 处理失败。
+	ModRound Module = "round"
+	// ModRG 是责任游戏限额累计，同样必须与投注原子推进。
+	ModRG Module = "rg"
+	// ModGacha 是抽卡保底计数，必须与抽卡消耗原子推进。
+	ModGacha Module = "gacha"
 )
 
 // AllModules 是全部玩家模块，登录时 pipeline 读回（§10.1）。
-var AllModules = []Module{ModBase, ModBag, ModQuest, ModSocial, ModMail}
+var AllModules = []Module{
+	ModBase, ModBag, ModQuest, ModSocial, ModMail,
+	ModRound, ModRG, ModGacha,
+}
 
 // HashTagMode 决定 Redis key 的 hash tag 取法。
 type HashTagMode string
@@ -165,6 +179,45 @@ func (k *Keys) MailPending(uid uint64) string {
 		return fmt.Sprintf("p:{%s}:%d:mailq", k.tag(uid), uid)
 	}
 	return fmt.Sprintf("p:{%d}:mailq", uid)
+}
+
+// Ledger 返回玩家流水的 Redis Stream key。
+//
+// 与玩家数据同 hash tag 是硬要求：流水必须与余额变更在同一个 Lua 里原子写入，
+// 不同 slot 就做不到原子，也就无法保证「有扣款必有流水」。
+func (k *Keys) Ledger(uid uint64) string {
+	if k.mode == TagShard {
+		return fmt.Sprintf("ledger:{%s}:%d", k.tag(uid), uid)
+	}
+	return fmt.Sprintf("ledger:{%d}", uid)
+}
+
+// LedgerCursor 记录导出器已导出到的位置。
+func (k *Keys) LedgerCursor(uid uint64) string {
+	if k.mode == TagShard {
+		return fmt.Sprintf("ledger:{%s}:%d:cursor", k.tag(uid), uid)
+	}
+	return fmt.Sprintf("ledger:{%d}:cursor", uid)
+}
+
+// LedgerDirty 是「有新流水待导出」的玩家集合，按分片切分。
+func (k *Keys) LedgerDirty(shard uint32) string {
+	return fmt.Sprintf("ledger:dirty:{s%d}", shard)
+}
+
+// Jackpot 返回奖池金额 key。
+func (k *Keys) Jackpot(pool string) string {
+	return fmt.Sprintf("jackpot:{%s}:amount", pool)
+}
+
+// JackpotMeta 返回奖池元信息（上次中奖时间、中奖者等）。
+func (k *Keys) JackpotMeta(pool string) string {
+	return fmt.Sprintf("jackpot:{%s}:meta", pool)
+}
+
+// JackpotPending 是奖池派彩的待处理索引，与奖池同 slot，保证「清零 + 记账」原子。
+func (k *Keys) JackpotPending(pool string) string {
+	return fmt.Sprintf("jackpot:{%s}:pending", pool)
 }
 
 // WorldBoss 返回世界 BOSS 状态 key。世界服是全局唯一逻辑，固定用 0 号分片位。
